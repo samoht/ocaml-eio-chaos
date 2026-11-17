@@ -68,11 +68,11 @@ module Processes = struct
 
   let environment () = Eio.Process.Env.empty
   let getenv_opt () _ = None
-  let pipe () ~sw:_ = raise (refused "env#process_mgr")
+  let pipe () ~sw:_ = raise (refused "env#process_mgr: pipe")
 
-  let spawn () ~sw:_ ?cwd:_ ?stdin:_ ?stdout:_ ?stderr:_ ?env:_ ?executable:_ _
-      =
-    raise (refused "env#process_mgr")
+  let spawn () ~sw:_ ?cwd:_ ?stdin:_ ?stdout:_ ?stderr:_ ?env:_ ?executable:_
+      args =
+    raise (refused ("env#process_mgr: spawn " ^ String.concat " " args))
 end
 
 let process_mgr = Eio.Resource.T ((), Eio.Process.Pi.mgr (module Processes))

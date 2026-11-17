@@ -3,8 +3,8 @@
     A test assembles the environment of a program from {e parts}, as a test
     written with [Eio_mock] assembles it from mocks. A part is a simulated
     device that keeps its state across a restart, such as a disk or a network.
-    {!run} runs the program many times on those parts, each time with one
-    failure a part allows, and restarts it on what the failure left.
+    {!run} runs the program many times on those parts, each time with a failure
+    a part allows, and restarts it on what the failure left.
 
     {[
     let check ~disk ~net main = Eio_chaos.run [ disk; net ] main
@@ -33,55 +33,103 @@ val none : t
 
 (** The operations a part asks about. *)
 module Op : sig
+  (** The type for which operations of one kind on one target the check tries
+      its faults at first, in its linear tier. The others are drawn in its
+      sampled tier. *)
+  type structure =
+    | Every  (** Each of them, as a part's opens or directory changes. *)
+    | Thin
+        (** The first three, the last, and the first of each length class, a
+            length rounded down to a power of two, as a log's writes. *)
+    | After of string
+        (** Those that follow one the check tries first among the operations of
+            that kind on the same target, or follow none, as the syncs that
+            follow a file's writes. *)
+
+  (** The type for whether an operation changes what a part keeps across a power
+      cut. A power cut falls after each operation that does, and a second fault
+      aims first at those of the path a first fault opened. *)
+  type changes =
+    | Never
+    | Maybe  (** Only where the part says it did, with {!Eio_chaos.changed}. *)
+    | Always
+
   type t = {
     device : string;  (** The part's name: ["fs"], ["net"]. *)
     kind : string;  (** ["write"], ["sync"], ["connect"], ["read"]. *)
     target : string;
-        (** What the operation is on, stable from one run to the next: a path,
-            or a connection and its side, as ["1c"]. A part that knows a name is
-            temporary gives it a stable form. *)
-    at : int;
-        (** The operation's place among those of its kind on its target: a rank
-            from [1], or a byte offset. With {!field-kind} and {!field-target}
-            it finds the operation again in another run. *)
+        (** What the operation is on: a path, or a connection and its side, as
+            ["1c"]. *)
+    offset : int;  (** Where a read or a write starts, else [0]. *)
     length : int;  (** The bytes a read asks for or a write offers, else [0]. *)
+    detail : string;
+        (** What else tells two changes apart, as a rename's destination, else
+            [""]. *)
+    structure : structure;
+    changes : changes;
   }
-  (** The type for operations. *)
+  (** The type for operations. A check aims a fault at an operation by its part,
+      its kind and its rank among the operations of that kind of that part, so
+      the targets a program names may differ from run to run. *)
 
   val pp : t Fmt.t
-  (** [pp] formats an operation as a trace line shows it: [fs write /f @1+5]. *)
+  (** [pp] formats an operation as a trace line shows it by default:
+      [write /f@0+5]. *)
 end
 
 val decide :
-  t -> Op.t -> name:('fault -> string) -> 'fault list -> 'fault option
-(** [decide t op ~name allowed] is the failure [op] meets in this run, if any,
-    among [allowed]: the failures the kernel can produce at [op], in the part's
-    own type. [name f] is one word for [f], distinct among [allowed], which
-    reports and replay keys show. The part then acts the failure out: [decide]
-    only chooses.
+  t ->
+  Op.t ->
+  name:('fault -> string) ->
+  ?pp:'fault Fmt.t ->
+  ?lasting:'fault list ->
+  ?durable:'fault list ->
+  ?alone:'fault list ->
+  'fault list ->
+  'fault option
+(** [decide t op ~name ~pp ~lasting ~durable ~alone once] is the failure [op]
+    meets in this run, if any, among those the kernel can produce at [op], in
+    the part's own type. The part then acts the failure out: [decide] only
+    chooses. [name f] is one word for [f], distinct among the failures listed at
+    [op], which keys show; [pp] (defaults to [name]) says what [f] does, as
+    ["fails with EIO"], which reports show. The failures come in four classes:
 
-    [allowed] may hold more than errors. A condition that lasts from [op] on (a
-    disk now full, an outage), a power cut, and each state a cut may leave are
-    choices of the same kind. A part asks about them at an operation of its own,
-    such as [{ kind = "cut"; _ }].
+    - [once] fail [op] alone, and pair with a second one later in the run;
+    - [lasting] (defaults to none) are conditions: one that starts at [op] holds
+      for every later operation of the part that lists it, as a disk that is
+      full. Its [pp] says what holds: ["the filesystem is full"];
+    - [durable] (defaults to none) are tried with a power cut after the run, in
+      place of [once]: the faults whose effect a cut shows, as a torn write;
+    - [alone] (defaults to none) are tried alone, at the operations of the
+      linear tier only, with a cut and without.
 
-    It is [None] for {!none}, for a {!quiet} part, during [setup], [inspect] and
-    the restart, and after a power cut. It does not suspend the calling fiber,
-    and may be called from any fiber of the run. *)
+    It is [None] for {!none}, for a {!quiet} part, outside a run of the program
+    and its restart, and during the restart. Once the power is cut, it raises
+    [Eio.Cancel.Cancelled]. It does not suspend the calling fiber, and may be
+    called from any fiber of the run. *)
 
-val power_cut : t -> 'a
-(** [power_cut t] cuts the power of the machine: it cancels every fiber of the
-    program, and the runner then restarts every part with [~power:true]. A disk
-    calls it when {!decide} answers its power cut. It raises
-    [Eio.Cancel.Cancelled] in the calling fiber.
+val index : t -> int
+(** [index t] is the number {!decide} gave to the operation it was last asked
+    about, from [1] in each run and in each restart. *)
 
-    @raise Invalid_argument
-      if [t] is {!none}, or if the program is not running with a failure. *)
+val changed : t -> int -> unit
+(** [changed t i] records that the operation numbered [i] changed what the part
+    keeps across a power cut: a power cut is tried after it. *)
+
+val spend : t -> Mtime.span -> unit
+(** [spend t d] is an operation that takes [d] of the run's clock, while other
+    fibers run. A part calls it for each operation that meets no fault, before
+    the operation has its effect, or within it for a sync. The time it takes
+    does not count as time a retry waited. It raises [Eio.Cancel.Cancelled] if
+    the power was cut meanwhile.
+
+    It does nothing outside a run of the program and its restart. *)
 
 val lost : t -> string -> unit
 (** [lost t what] records that the program was promised [what] and that the part
-    no longer holds it, as an acknowledged file that a power cut emptied. The
-    run fails with [what]. A part calls it from [restart].
+    no longer holds it, as ["an acknowledged file: /f held \"x\""]. A part calls
+    it from [restart]. The run fails with a report titled ["a power cut lost "]
+    or ["a fault lost "] followed by [what].
 
     @raise Invalid_argument if [t] is {!none}. *)
 
@@ -96,6 +144,15 @@ type capability =
       (** [env#fs], and [env#cwd] confined to itself. *)
   | Net of [ `Generic ] Eio.Net.ty Eio.Resource.t  (** [env#net]. *)
 
+(** The type for what a power cut keeps of the changes no sync made durable. *)
+type keep =
+  | Lose_unsynced  (** None of them. *)
+  | Keep_unsynced  (** All of them, as after a process kill. *)
+  | Choose of (int -> int)
+      (** Those the draws choose: [f n] is a choice in [\[0, n)]. The check
+          tries each sequence of choices while they are few, and draws them at
+          random past that. *)
+
 (** What a package provides to plug a simulated device in. *)
 module type PART = sig
   type chaos
@@ -106,7 +163,11 @@ module type PART = sig
 
   val name : string
   (** [name] names the part in operations, reports and replay keys: ["fs"]. It
-      holds no [':'] or ['+']. *)
+      holds no [':'], ['+'], ['|'] or ['/']. *)
+
+  val noun : string
+  (** [noun] is one of the part's operations, as a report names them:
+      ["filesystem operation"]. *)
 
   val start :
     t ->
@@ -117,17 +178,32 @@ module type PART = sig
     chaos ->
     capability
   (** [start t ~os ~sw ~clock ~mono_clock chaos] makes [t] new and empty, as
-      [os] has it, for a run on those clocks, and is its capability. Each
-      operation through it calls {!decide} on [chaos] and acts out the answer.
-      [sw] ends with the run and its restart. *)
+      [os] has it, for a run on those clocks, and is the capability that [setup]
+      gets. [sw] ends with the run and its restart. *)
 
-  val restart : t -> power:bool -> capability
-  (** [restart t ~power] is the capability of [t] for the program started again.
-      [t] keeps what a restart keeps. With [power] false a process was
+  val run : t -> cut:keep option -> faults:string list -> capability
+  (** [run t ~cut ~faults] is the capability of [t] for the program, on what
+      [setup] left, which is durable. Each operation through it asks {!decide}
+      on the [chaos] of [start]. [cut] is what a power cut would keep, if the
+      run may meet one; [faults] the names of the faults the run will meet on
+      [t]. *)
+
+  val cut : t -> (string * string) list
+  (** [cut t] cuts the power now: [t] keeps what [cut] of {!run} or {!restart}
+      says. It is lines for a report: a name and a text, as
+      [("lost", "#2 write /f@0+4")]. *)
+
+  val restart : t -> power:bool -> cut:keep option -> capability
+  (** [restart t ~power ~cut] is the capability of [t] for the program started
+      again. [t] keeps what a restart keeps. With [power] false a process was
       restarted: a disk keeps everything, a network keeps the ports held in
       TIME_WAIT. With [power] true the power was cut: a disk keeps what its
-      crash rules allow, a network keeps nothing. Capabilities given before no
-      longer work after a power cut. *)
+      crash rules allow, a network keeps nothing. [cut] is what a power cut
+      during the restart would keep, if it may meet one. A part reports a
+      promise it broke with {!lost}. *)
+
+  val pp_op : Op.t Fmt.t
+  (** [pp_op] formats one of the part's operations for a trace line. *)
 end
 with type chaos := t
 
@@ -137,6 +213,10 @@ type part
 module Part (P : PART) : sig
   val v : P.t -> part
   (** [v p] is the part with state [p]. *)
+
+  val find : t -> P.t option
+  (** [find t] is the state of the part of [P] in the run of [t], while it runs:
+      how a part's own functions reach it from [env#chaos]. *)
 end
 
 val quiet : part -> part
@@ -166,17 +246,19 @@ type env =
     unchanged.
 
     - [fs] and [cwd], [net]: those of the parts given to {!run}. A capability no
-      part gives is refused: each of its operations raises [Eio.Io];
+      part gives is refused: each of its operations raises [Eio.Io] with
+      [Not_available];
     - [clock] and [mono_clock] start at [0.] and jump to the next timer when
       every fiber waits;
-    - [secure_random] is drawn from the run's seed, and OCaml's default [Random]
-      is reset to it each time an env is made;
+    - [secure_random] draws bytes from a fixed seed, and the default [Random]
+      state is seeded before each run: the first run and each run with a fault
+      draw the same, and a restart draws others, as a new process does;
     - [stdin] is empty, and [stdout], [stderr] and [Eio.traceln] are kept in
-      memory: a failure report shows what the program printed, bounded;
+      memory: a failure report shows what the program printed, its last lines;
     - [domain_mgr] runs its work in the run's own event loop;
-    - [process_mgr] refuses each process with [Eio.Io], and has an empty
-      environment;
-    - [backend_id] is ["chaos"];
+    - [process_mgr] starts nothing: [spawn] and [pipe] raise [Eio.Io] with
+      [Not_available];
+    - [debug] is Eio's, and [backend_id] is ["chaos"];
     - [chaos] is the run's {!t}, for a device the program builds itself. *)
 
 val run :
@@ -192,33 +274,48 @@ val run :
 (** [run ~os ~budget ~seed ~replay ~setup ~inspect parts app] runs [app] once
     with no failure on [parts], which answer as [os] (defaults to [`Linux]) does
     and hold what [setup] (defaults to doing nothing) left there. It then runs
-    [app] again many times, each time from that state, with one failure of one
-    part. After each of those runs it restarts every part and runs [app] again
+    [app] again many times, each time from that state, with failures of the
+    parts. After each of those runs it restarts every part and runs [app] again
     with no failure, as a machine restarts a service.
 
     {b How the failures are picked.} [run] learns the operations of [app] from
-    its first run, those of every part in one sequence. It tries every failure a
-    part allowed at every operation, but for the many operations of one kind on
-    one target, of which it takes the first three, the last and one of each
-    length class. So the runs of two parts add up: they do not multiply. Then it
-    spends half as many runs again, at least 200 and within [budget] (defaults
-    to [20_000]), on runs drawn at random from [seed] (defaults to [0]): the
-    other operations, and two failures in a run, on one part or on two, the
-    second on the path the first one opened first. With no part that allows a
-    failure, it is the first run alone.
+    its first run, those of every part in one sequence, and what each part
+    allows at each. Runs come in two passes:
+
+    - with no power cut: each [once] failure and each [lasting] condition at
+      each operation, and each [alone] failure, then pairs of failures;
+    - with a power cut, if an operation of the first run may change what a part
+      keeps: a cut after each such operation and at the end, each [durable] and
+      [alone] failure followed by a cut at the end, then pairs of those, cuts
+      during the restart, and the other states a cut may leave.
+
+    Each pass has two tiers. The linear tier runs whole, at the operations
+    {!Op.type-structure} picks: the runs of two parts add up, they do not
+    multiply. The sampled tier spends a fortieth of [budget] (defaults to
+    [20_000]), or half as much as the linear tier if that is more, on runs drawn
+    from [seed] (defaults to [0]): the other operations, and second failures,
+    first those on the path the first failure opened, at the operations that may
+    change what a part keeps. A check never passes on a partial linear tier: the
+    first run stops once the linear tier needs more runs than [budget].
 
     {b When it passes.} [run] passes iff:
 
     - the first run returns, and a second run with no failure makes the same
-      operations;
-    - no run hangs or raises an exception other than [Eio.Io] and [End_of_file],
-      an assertion of [app] included;
+      kinds of operation in the same order. Where only their targets differ, the
+      check goes on, and a failure report says where they differed;
+    - no run hangs or raises an exception other than [Eio.Io], an assertion of
+      [app] included. A run hangs when every fiber waits and no timer is due,
+      when it still runs after an hour of its clock, when it wakes 10 million
+      times without waiting 1 ms, when it makes 100,000 operations, when one
+      failed operation is retried 10,000 times more than its first run made it
+      while its clock stands still, or when it keeps going for 1000 operations
+      after a power cut;
     - after each failure no part reports a promise {!lost}, and [inspect]
       (defaults to doing nothing), called as a fresh process, returns;
     - each restart returns.
 
-    An [Eio.Io] or [End_of_file] that escapes a run with a failure neither
-    passes nor fails it: the restart decides.
+    An [Eio.Io] that escapes a run with a failure neither passes nor fails it:
+    the restart decides.
 
     The default [Random] state is as it was before, once [run] returns.
 
@@ -226,18 +323,20 @@ val run :
       with a report of the first failing run: the failure, the operations of the
       run across the parts, what the program printed, the error, and the line to
       paste that runs it alone, as
-      [Eio_chaos.run ~replay:"85d85f49/net:connect:1c@0=timeout" parts app]. A
-      key names one failure as [device:kind:target@at=name], and two joined by
-      [+], whatever the parts they are on.
+      [Eio_chaos.run ~replay:"fs+net/85d85f49/fs:write:1.eio" parts app].
     @raise Invalid_argument
-      if [budget] is not positive, [replay] is not a replay string, two of
-      [parts] have the same name or give the same capability. *)
+      if [budget] is not positive, [replay] is not a replay string of these
+      parts, or two of [parts] have the same name or give the same capability.
+*)
 
 (**/**)
 
 module Private : sig
+  type pass = Errors | Cuts
+
   val run :
     name:string ->
+    ?passes:pass list ->
     ?os:[< os ] ->
     ?budget:int ->
     ?seed:int ->
@@ -247,9 +346,18 @@ module Private : sig
     part list ->
     (env -> unit) ->
     unit
-  (** [run ~name parts app] is {!val-run} [parts app], for a one-call shortcut
-      of another package: its report names [name], and replays as
-      [name ~replay:"..." app]. *)
+  (** [run ~name ~passes parts app] is {!val-run} [parts app] with the passes
+      [passes] alone (defaults to both), for a one-call shortcut of another
+      package: its report names [name], and replays as [name ~replay:"..." app].
+  *)
+
+  val restarted : env -> bool
+  (** [restarted env] is [true] iff [env] is that of a restart. *)
+
+  val within : ?os:[< os ] -> part list -> (env -> 'a) -> ('a, string) result
+  (** [within parts f] is [f env] in an event loop of its own, with an
+      {!type-env} on [parts] and no fault; [Error] says why [f] hung or the
+      [Eio.Io] it raised. *)
 end
 
 (**/**)

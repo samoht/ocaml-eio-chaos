@@ -1,7 +1,7 @@
 (library
  (name eio_chaos)
  (public_name eio-chaos)
- (private_modules quiet_mock systhread op plan output stdenv report)
+ (private_modules quiet_mock systhread op plan output stdenv recorder)
  (libraries
   hermetic
   eio

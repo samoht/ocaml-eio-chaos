@@ -3,11 +3,15 @@ open! Hermetic
 (* What a report shows: the tail. The buffer holds at most twice that. *)
 let shown = 2048
 
-type t = { out : Buffer.t; mutable dropped : int }
+type t = {
+  out : Buffer.t;
+  mutable dropped : int;
+  mutable printed : bool; (* whether a program printed anything *)
+}
 
-let v () = { out = Buffer.create 256; dropped = 0 }
+let v () = { out = Buffer.create 256; dropped = 0; printed = false }
 
-let add t s =
+let buffer t s =
   Buffer.add_string t.out s;
   let n = Buffer.length t.out in
   if n > 2 * shown then begin
@@ -17,7 +21,11 @@ let add t s =
     Buffer.add_string t.out tail
   end
 
-let mark t line = if Buffer.length t.out > 0 then add t (line ^ "\n")
+let add t s =
+  t.printed <- true;
+  buffer t s
+
+let mark t line = buffer t (line ^ "\n")
 
 (* The tail of [s] from the line that starts at or after [i], or else from
    the first character there. *)
@@ -35,9 +43,11 @@ let from s i =
       (j, String.sub s j (n - j))
 
 let printed t =
-  let s = Buffer.contents t.out in
-  let n = String.length s in
-  let cut, tail = if n > shown then from s (n - shown) else (0, s) in
-  match t.dropped + cut with
-  | 0 -> tail
-  | d -> Fmt.str "... %d bytes before\n%s" d tail
+  if not t.printed then ""
+  else
+    let s = Buffer.contents t.out in
+    let n = String.length s in
+    let cut, tail = if n > shown then from s (n - shown) else (0, s) in
+    match t.dropped + cut with
+    | 0 -> tail
+    | d -> Fmt.str "... %d bytes before\n%s" d tail
