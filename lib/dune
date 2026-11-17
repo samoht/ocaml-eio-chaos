@@ -1,0 +1,10 @@
+(library
+ (name eio_chaos)
+ (public_name eio-chaos)
+ (private_modules op)
+ (libraries hermetic eio fmt))
+
+(mdx
+ (package eio-chaos)
+ (files eio_chaos.mli)
+ (libraries eio-chaos eio))

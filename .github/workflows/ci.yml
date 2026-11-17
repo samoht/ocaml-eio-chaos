@@ -1,0 +1,137 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        ocaml-compiler: ['5.4', '5.5']
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: ${{ matrix.ocaml-compiler }}
+
+      - run: opam install . --deps-only --with-test
+      - run: opam exec -- dune build
+      - run: opam exec -- dune test
+
+  release:
+    name: Release build
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '5.4'
+
+      - run: opam install . --deps-only
+      - run: opam exec -- dune build -p eio-chaos @install
+
+  lower-bounds:
+    name: Lower bounds
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '5.4'
+
+      # Resolve every dependency to the oldest version its lower bound allows,
+      # so a call that only compiles against a newer API fails here rather than
+      # in a downstream opam build.
+      - run: opam install . --deps-only --with-test --criteria="+count[version-lag,solution]"
+      - run: opam exec -- dune build
+      - run: opam exec -- dune test
+
+  doc:
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '5.4'
+
+      - run: opam install . --deps-only --with-doc
+      - run: opam install odoc
+      - run: opam exec -- dune build @doc
+
+  lint-fmt:
+    name: Format
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '5.4'
+
+      - uses: ocaml/setup-ocaml/lint-fmt@v3
+
+  # merlint is not on opam yet and its dependencies come from a private
+  # overlay, so this job reports without blocking until merlint is released.
+  # The overlay's packages build against their own hermetic, not the one
+  # installed here, so merlint gets a switch of its own and reads the .cmt
+  # files built in this one.
+  merlint:
+    name: Lint (merlint)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: ocaml/setup-ocaml@v3
+        with:
+          ocaml-compiler: '5.4'
+
+      - run: opam install . --deps-only --with-test
+      - run: opam exec -- dune build @check
+      # The binary is cached by the overlay's commit and the compiler's
+      # version, which fixes the format of the .cmt files it reads.
+      - id: merlint-key
+        run: |
+          echo "ocaml=$(opam exec -- ocamlc -version)" >> "$GITHUB_OUTPUT"
+          echo "overlay=$(git ls-remote https://tangled.org/gazagnaire.org/opam-overlay.git HEAD | cut -f1)" >> "$GITHUB_OUTPUT"
+      # Saved as soon as it is built: actions/cache would save it only when
+      # the job passes, so a run with findings would never fill it.
+      - id: merlint-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ~/merlint
+          key: merlint-${{ runner.os }}-${{ steps.merlint-key.outputs.ocaml }}-${{ steps.merlint-key.outputs.overlay }}
+      - if: steps.merlint-cache.outputs.cache-hit != 'true'
+        run: |
+          opam switch create merlint --no-switch \
+            "ocaml-base-compiler.${{ steps.merlint-key.outputs.ocaml }}" \
+            --repos samoht=git+https://tangled.org/gazagnaire.org/opam-overlay.git,default
+          opam install --switch merlint merlint
+          mkdir -p ~/merlint
+          cp "$(opam var --switch merlint bin)/merlint" ~/merlint/
+      - if: steps.merlint-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ~/merlint
+          key: ${{ steps.merlint-cache.outputs.cache-primary-key }}
+      - run: opam exec -- ~/merlint/merlint
