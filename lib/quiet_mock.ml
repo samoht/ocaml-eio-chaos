@@ -1,0 +1,264 @@
+open! Hermetic
+
+(* Copied from eio-fs's lib/chaos/quiet_mock.ml, itself adapted from Eio 1.6's
+   mock backend and clock (ISC, see LICENSE.md). *)
+
+module Fiber_context = Eio.Private.Fiber_context
+module Trace = Eio.Private.Trace
+module Lf_queue = Eio_utils.Lf_queue
+module Suspended = Eio_utils.Suspended
+
+exception Deadlock_detected of Trace.id list
+exception Time_limit
+exception Busy
+exception Too_long
+exception Stopped
+
+(* {1 Clock} *)
+
+module Mono = struct
+  module Key = struct
+    type t = < >
+
+    let compare = compare
+  end
+
+  module Job = struct
+    type t = { time : Mtime.t; since : Mtime.t; resolver : unit Eio.Promise.u }
+
+    let compare a b = Mtime.compare a.time b.time
+  end
+
+  module Q = Psq.Make (Key) (Job)
+
+  module Impl = struct
+    type time = Mtime.t
+    type t = { mutable now : Mtime.t; mutable q : Q.t }
+
+    let now t = t.now
+
+    let sleep_until t time =
+      if Mtime.compare time t.now <= 0 then Eio.Fiber.yield ()
+      else
+        let p, r = Eio.Promise.create () in
+        let k = object end in
+        t.q <- Q.add k { time; since = t.now; resolver = r } t.q;
+        try Eio.Promise.await p
+        with Eio.Cancel.Cancelled _ as ex ->
+          t.q <- Q.remove k t.q;
+          raise ex
+
+    let set_time t time =
+      let rec drain () =
+        match Q.min t.q with
+        | Some (_, v) when Mtime.compare v.time time <= 0 ->
+            Eio.Promise.resolve v.resolver ();
+            t.q <- Option.get (Q.rest t.q);
+            drain ()
+        | _ -> ()
+      in
+      drain ();
+      t.now <- time
+
+    (* Eio_mock's [try_advance], which does not move past [limit], nor back
+       to a timer the turns since passed, and says how long the timer it
+       moves to waited. *)
+    let try_advance t ~limit =
+      match Q.min t.q with
+      | None -> `Idle
+      | Some (_, v) when Mtime.compare v.time limit > 0 -> `Past_limit
+      | Some (_, v) ->
+          set_time t (if Mtime.compare v.time t.now > 0 then v.time else t.now);
+          `Advanced (Mtime.span v.since v.time)
+  end
+
+  let handler = Eio.Time.Pi.clock (module Impl)
+end
+
+module Wall = struct
+  type t = Mono.Impl.t
+  type time = float
+
+  let wall_of_mtime m = Int64.to_float (Mtime.to_uint64_ns m) /. 1e9
+  let wall_to_mtime w = Mtime.of_uint64_ns (Int64.of_float (w *. 1e9))
+  let now t = wall_of_mtime (Mono.Impl.now t)
+  let sleep_until t time = Mono.Impl.sleep_until t (wall_to_mtime time)
+end
+
+let wall_handler = Eio.Time.Pi.clock (module Wall)
+
+(* {1 Scheduler} *)
+
+type exit = [ `Exit_scheduler ]
+
+type t = {
+  run_q : (unit -> exit) Lf_queue.t;
+  clock : Mono.Impl.t;
+  limit : Mtime.t;
+  mutable past_limit : bool;
+  mutable turns : int; (* since a fiber last waited [min_wait] or more *)
+  mutable total : int;
+  mutable busy : bool;
+  idle : unit -> bool;
+  stop : unit -> bool;
+  waiting : (Trace.id, unit) Hashtbl.t;
+}
+
+type handler = { handle : 'a. 'a Effect.t -> (unit -> 'a) option }
+
+(* A turn costs about 0.1 us on eio_posix on Linux, and up to 20 us on a
+   loaded Mac: 1 us, fixed. *)
+let turn = Mtime.Span.(1 * us)
+let max_turns = 10_000_000
+let min_wait = Mtime.Span.(1 * ms)
+
+(* A turn taken in a fiber: past the limits, the fiber waits for ever, and
+   the scheduler stops at its next turn. *)
+let charge t () =
+  t.turns <- t.turns + 1;
+  t.total <- t.total + 1;
+  let now =
+    Option.value
+      (Mtime.add_span (Mono.Impl.now t.clock) turn)
+      ~default:Mtime.max_stamp
+  in
+  let past = Mtime.compare now t.limit > 0 in
+  if t.total > max_turns || past then begin
+    if past then t.past_limit <- true else t.busy <- true;
+    Eio.Cancel.protect (fun () ->
+        Eio.Promise.await (fst (Eio.Promise.create ())))
+  end
+  else Mono.Impl.set_time t.clock now
+
+let rec schedule t : exit =
+  match Lf_queue.pop t.run_q with
+  | _ when t.stop () -> `Exit_scheduler
+  | Some f ->
+      t.turns <- t.turns + 1;
+      t.total <- t.total + 1;
+      if t.total > max_turns then begin
+        t.busy <- true;
+        `Exit_scheduler
+      end
+      else
+        let now =
+          Option.value
+            (Mtime.add_span (Mono.Impl.now t.clock) turn)
+            ~default:Mtime.max_stamp
+        in
+        if Mtime.compare now t.limit > 0 then begin
+          t.past_limit <- true;
+          `Exit_scheduler
+        end
+        else begin
+          Mono.Impl.set_time t.clock now;
+          f ()
+        end
+  | None when t.idle () -> schedule t
+  | None -> (
+      match Mono.Impl.try_advance t.clock ~limit:t.limit with
+      | `Advanced waited ->
+          if Mtime.Span.compare waited min_wait >= 0 then t.turns <- 0;
+          schedule t
+      | `Idle -> `Exit_scheduler
+      | `Past_limit ->
+          t.past_limit <- true;
+          `Exit_scheduler)
+
+let no_effects = { handle = (fun _ -> None) }
+
+let run ?(idle = fun () -> false) ?(stop = fun () -> false)
+    ?(effects = no_effects) ~limit main =
+  let clock = { Mono.Impl.now = Mtime.of_uint64_ns 0L; q = Mono.Q.empty } in
+  let wall : float Eio.Time.clock_ty Eio.Resource.t =
+    Eio.Resource.T (clock, wall_handler)
+  in
+  let mono : Eio.Time.Mono.ty Eio.Resource.t =
+    Eio.Resource.T (clock, Mono.handler)
+  in
+  let t =
+    {
+      run_q = Lf_queue.create ();
+      clock;
+      limit = Wall.wall_to_mtime limit;
+      past_limit = false;
+      turns = 0;
+      total = 0;
+      busy = false;
+      idle;
+      stop;
+      waiting = Hashtbl.create 16;
+    }
+  in
+  let rec fork ~new_fiber:fiber fn =
+    Trace.fiber (Fiber_context.tid fiber);
+    Effect.Deep.match_with fn ()
+      {
+        retc =
+          (fun () ->
+            Fiber_context.destroy fiber;
+            schedule t);
+        exnc =
+          (fun ex ->
+            let bt = Printexc.get_raw_backtrace () in
+            Fiber_context.destroy fiber;
+            Printexc.raise_with_backtrace ex bt);
+        effc =
+          (fun (type a)
+            (e : a Effect.t)
+            :
+            ((a, exit) Effect.Deep.continuation -> exit) option
+          ->
+            match e with
+            | Eio.Private.Effects.Suspend f ->
+                Some
+                  (fun k ->
+                    let k = { Suspended.k; fiber } in
+                    let tid = Fiber_context.tid fiber in
+                    Hashtbl.replace t.waiting tid ();
+                    f fiber (fun result ->
+                        Lf_queue.push t.run_q (fun () ->
+                            Hashtbl.remove t.waiting tid;
+                            Fiber_context.clear_cancel_fn fiber;
+                            match result with
+                            | Ok v -> Suspended.continue k v
+                            | Error ex -> Suspended.discontinue k ex));
+                    schedule t)
+            | Eio.Private.Effects.Fork (new_fiber, f) ->
+                Some
+                  (fun k ->
+                    let k = { Suspended.k; fiber } in
+                    Lf_queue.push_head t.run_q (fun () ->
+                        Suspended.continue k ());
+                    fork ~new_fiber f)
+            | Eio.Private.Effects.Get_context ->
+                Some (fun k -> Effect.Deep.continue k fiber)
+            | e ->
+                Option.map
+                  (fun run k ->
+                    let v = run () in
+                    let k = { Suspended.k; fiber } in
+                    Lf_queue.push t.run_q (fun () -> Suspended.continue k v);
+                    schedule t)
+                  (effects.handle e));
+      }
+  in
+  let new_fiber = Fiber_context.make_root () in
+  let result = ref None in
+  let (`Exit_scheduler : exit) =
+    Domain_local_await.using ~prepare_for_await:Eio_utils.Dla.prepare_for_await
+      ~while_running:(fun () ->
+        fork ~new_fiber (fun () -> result := Some (main wall mono (charge t))))
+  in
+  match !result with
+  | Some x -> x
+  | None ->
+      if t.stop () then raise Stopped
+      else if t.busy && t.turns >= max_turns then raise Busy
+      else if t.busy then raise Too_long
+      else if t.past_limit then raise Time_limit
+      else
+        raise
+          (Deadlock_detected
+             (List.sort compare
+                (Hashtbl.fold (fun tid () l -> tid :: l) t.waiting [])))

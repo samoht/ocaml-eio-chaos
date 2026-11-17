@@ -1,8 +1,8 @@
 (library
  (name eio_chaos)
  (public_name eio-chaos)
- (private_modules op)
- (libraries hermetic eio fmt))
+ (private_modules quiet_mock systhread op)
+ (libraries hermetic eio eio.utils eio.unix fmt mtime psq domain-local-await))
 
 (mdx
  (package eio-chaos)
