@@ -1,6 +1,16 @@
-type fault = Eio_error | Full | Cut
+type fault = Eio_error | Full | Full_from | Evict
 
-let fault_name = function Eio_error -> "eio" | Full -> "full" | Cut -> "cut"
+let fault_name = function
+  | Eio_error -> "eio"
+  | Full -> "full"
+  | Full_from -> "full-from"
+  | Evict -> "evict"
+
+let pp_fault ppf = function
+  | Eio_error -> Fmt.string ppf "fails with EIO"
+  | Full -> Fmt.string ppf "fails with ENOSPC"
+  | Full_from -> Fmt.string ppf "the disk is full"
+  | Evict -> Fmt.string ppf "fails with EIO, its cache dropped"
 
 type Eio.Exn.err += Disk of string
 
@@ -19,7 +29,7 @@ type t = {
   mutable durable : (string * string) list;
   mutable promised : (string * string) list;
   mutable gen : int; (* a capability of an older generation is dead *)
-  ranks : (string * string, int) Hashtbl.t;
+  mutable keep : Eio_chaos.keep option;
   mutable runs : string list list; (* latest first, each latest first *)
   mutable restarts : bool list; (* latest first *)
 }
@@ -31,40 +41,55 @@ let v () =
     durable = [];
     promised = [];
     gen = 0;
-    ranks = Hashtbl.create 8;
+    keep = None;
     runs = [];
     restarts = [];
   }
 
 let runs t = List.rev_map List.rev t.runs
 let restarts t = List.rev t.restarts
-
-let ack t name =
-  match List.assoc_opt name t.cache with
-  | Some v -> t.promised <- (name, v) :: List.remove_assoc name t.promised
-  | None -> invalid_arg name
+let op_time = Mtime.Span.(1 * us)
+let sync_time = Mtime.Span.(1 * ms)
 
 let norm p =
   if String.starts_with ~prefix:"/" p then String.sub p 1 (String.length p - 1)
   else p
 
-(* Asks the run whether [kind] on [target] fails, and logs the answer. *)
-let ask (t, gen) kind target ~length allowed =
+let pp_op ppf (op : Eio_chaos.Op.t) = Fmt.pf ppf "%s %s" op.kind op.target
+
+(* Asks the run whether [kind] on [target] fails, logs the answer, and takes
+   the operation's time if it does not. *)
+let ask (t, gen) ?(time = op_time) ?lasting ?durable ?alone ~structure ~changes
+    kind target ~length once =
   if gen <> t.gen then raise (error "the power was cut");
-  let at =
-    1 + Option.value ~default:0 (Hashtbl.find_opt t.ranks (kind, target))
+  let op =
+    {
+      Eio_chaos.Op.device = "fs";
+      kind;
+      target;
+      offset = 0;
+      length;
+      detail = "";
+      structure;
+      changes;
+    }
   in
-  Hashtbl.replace t.ranks (kind, target) at;
-  let op = { Eio_chaos.Op.device = "fs"; kind; target; at; length } in
-  let f = Eio_chaos.decide t.chaos op ~name:fault_name allowed in
-  Option.iter
-    (fun f ->
-      let key = Fmt.str "fs:%s:%s@%d=%s" kind target at (fault_name f) in
-      match t.runs with
-      | r :: rs -> t.runs <- (key :: r) :: rs
-      | [] -> t.runs <- [ [ key ] ])
-    f;
+  let f =
+    Eio_chaos.decide t.chaos op ~name:fault_name ~pp:pp_fault ?lasting ?durable
+      ?alone once
+  in
+  (match f with
+  | Some f ->
+      let key = Fmt.str "%s:%s=%s" kind target (fault_name f) in
+      t.runs <-
+        (match t.runs with r :: rs -> (key :: r) :: rs | [] -> [ [ key ] ])
+  | None -> Eio_chaos.spend t.chaos time);
   f
+
+let fail = function
+  | Some (Eio_error | Evict) -> raise (error "eio")
+  | Some (Full | Full_from) -> raise (error "full")
+  | None -> ()
 
 module Dir = struct
   type nonrec t = t * int
@@ -94,29 +119,38 @@ module Dir = struct
 
   let symlink ~link_to ((t, _) as d) path =
     let k = norm path in
-    match
-      ask d "write" k ~length:(String.length link_to) [ Eio_error; Full ]
-    with
-    | Some f -> raise (error (fault_name f))
-    | None -> t.cache <- (k, link_to) :: List.remove_assoc k t.cache
+    fail
+      (ask d ~structure:Thin ~changes:Always ~lasting:[ Full_from ]
+         ~durable:[ Eio_error ] "write" k ~length:(String.length link_to)
+         [ Eio_error; Full ]);
+    t.cache <- (k, link_to) :: List.remove_assoc k t.cache
 
   let read_link ((t, _) as d) path =
     let k = norm path in
-    match ask d "read" k ~length:0 [ Eio_error ] with
-    | Some f -> raise (error (fault_name f))
-    | None -> (
-        match List.assoc_opt k t.cache with
-        | Some v -> v
-        | None -> raise (error ("no " ^ k)))
+    fail (ask d ~structure:Thin ~changes:Never "read" k ~length:1 [ Eio_error ]);
+    match List.assoc_opt k t.cache with
+    | Some v -> v
+    | None -> raise (error ("no " ^ k))
 
   let sync_dir ((t, _) as d) _ =
-    match ask d "sync" "/" ~length:0 [ Eio_error; Cut ] with
-    | Some Cut -> Eio_chaos.power_cut t.chaos
-    | Some f -> raise (error (fault_name f))
-    | None -> t.durable <- t.cache
+    let f =
+      ask d ~time:sync_time ~structure:Every ~changes:Maybe ~alone:[ Evict ]
+        "sync" "/" ~length:0 [ Eio_error ]
+    in
+    match f with
+    | Some Evict ->
+        t.cache <- t.durable;
+        fail f
+    | Some _ -> fail f
+    | None ->
+        if t.cache <> t.durable then
+          Eio_chaos.changed t.chaos (Eio_chaos.index t.chaos);
+        t.durable <- t.cache
 
   let read_dir ((t, _) as d) _ =
-    ignore (ask d "list" "/" ~length:0 [] : fault option);
+    ignore
+      (ask d ~structure:Every ~changes:Never "list" "/" ~length:0 []
+        : fault option);
     List.sort compare (List.map fst t.cache)
 end
 
@@ -132,6 +166,8 @@ module Part = struct
   type nonrec t = t
 
   let name = "fs"
+  let noun = "disk operation"
+  let pp_op = pp_op
 
   let start t ~os:_ ~sw:_ ~clock:_ ~mono_clock:_ chaos =
     t.chaos <- chaos;
@@ -139,29 +175,59 @@ module Part = struct
     t.durable <- [];
     t.promised <- [];
     t.gen <- t.gen + 1;
-    Hashtbl.reset t.ranks;
+    t.keep <- None;
     t.runs <- [] :: t.runs;
     capability t
 
-  let restart t ~power =
+  (* What [setup] left is durable. *)
+  let run t ~cut ~faults:_ =
+    t.durable <- t.cache;
+    t.keep <- cut;
+    capability t
+
+  let cut t =
+    (match t.keep with
+    | Some Lose_unsynced | None -> t.cache <- t.durable
+    | Some Keep_unsynced -> ()
+    | Some (Choose f) ->
+        t.cache <-
+          List.filter_map
+            (fun (k, v) ->
+              if List.assoc_opt k t.durable = Some v then Some (k, v)
+              else if f 2 = 1 then Some (k, v)
+              else Option.map (fun w -> (k, w)) (List.assoc_opt k t.durable))
+            t.cache);
+    t.durable <- t.cache;
+    t.gen <- t.gen + 1;
+    [ ("kept", String.concat " " (List.map fst t.cache)) ]
+
+  let restart t ~power ~cut =
     t.restarts <- power :: t.restarts;
-    if power then begin
-      t.cache <- t.durable;
-      t.gen <- t.gen + 1;
-      List.iter
-        (fun (k, v) ->
-          if List.assoc_opt k t.durable <> Some v then
-            Eio_chaos.lost t.chaos
-              (Fmt.str "%s held %S when acknowledged, and is now %s" k v
-                 (match List.assoc_opt k t.durable with
-                 | None -> "missing"
-                 | Some w -> Fmt.str "%S" w)))
-        (List.rev t.promised)
-    end;
+    if not power then t.gen <- t.gen + 1;
+    List.iter
+      (fun (k, v) ->
+        if List.assoc_opt k t.cache <> Some v then
+          Eio_chaos.lost t.chaos
+            (Fmt.str "%s: it held %S when acknowledged, and is now %s" k v
+               (match List.assoc_opt k t.cache with
+               | None -> "missing"
+               | Some w -> Fmt.str "%S" w)))
+      (List.rev t.promised);
     t.promised <- [];
+    t.keep <- cut;
     capability t
 end
 
-let part t =
-  let module P = Eio_chaos.Part (Part) in
-  P.v t
+module P = Eio_chaos.Part (Part)
+
+let part t = P.v t
+
+let ack env name =
+  match P.find env#chaos with
+  | None -> invalid_arg "Disk.ack: not a run of a disk"
+  | Some t -> (
+      match List.assoc_opt name t.cache with
+      | Some v ->
+          t.promised <- (name, v) :: List.remove_assoc name t.promised;
+          Eio_chaos.changed t.chaos (Eio_chaos.index t.chaos)
+      | None -> invalid_arg name)

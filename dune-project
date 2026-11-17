@@ -19,11 +19,11 @@
  (tags (eio testing chaos))
  (description
   "eio-chaos runs an Eio program many times on simulated devices, each
-time with one failure the real kernel can produce, and restarts it on what the
-failure left. The devices are parts that other packages provide, such as a disk
-or a network. Eio_chaos.run builds the program's env from them, with simulated
-clocks, seeded entropy and captured output, and reports the first failure with
-a line that replays it.")
+time with a failure the real kernel can produce or a power cut, and restarts it
+on what the failure left. The devices are parts that other packages provide,
+such as a disk or a network. Eio_chaos.run builds the program's env from them,
+with simulated clocks, seeded entropy and captured output, and reports the
+first failure with a line that replays it.")
  (depends
   (hermetic (>= 0.1.0))
   (ocaml (>= 5.4))
@@ -34,4 +34,5 @@ a line that replays it.")
   psq
   domain-local-await
   (mdx (and :with-test (>= 2.3.0)))
-  (alcotest (and :with-test (>= 1.7.0)))))
+  (alcotest (and :with-test (>= 1.7.0)))
+  (alcobar :with-test)))

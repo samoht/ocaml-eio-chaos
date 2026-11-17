@@ -1,0 +1,6 @@
+(copy_files#
+ (files ../../lib/{plan,op}.{ml,mli}))
+
+(test
+ (name test)
+ (libraries hermetic fmt alcotest))

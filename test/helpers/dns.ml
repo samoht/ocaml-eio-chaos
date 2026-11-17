@@ -15,14 +15,11 @@ let error e = Eio.Exn.create (Dns e)
 
 type t = {
   mutable chaos : Eio_chaos.t;
-  ranks : (string, int) Hashtbl.t;
   mutable runs : string list list; (* latest first, each latest first *)
   mutable restarts : bool list; (* latest first *)
 }
 
-let v () =
-  { chaos = Eio_chaos.none; ranks = Hashtbl.create 8; runs = []; restarts = [] }
-
+let v () = { chaos = Eio_chaos.none; runs = []; restarts = [] }
 let runs t = List.rev_map List.rev t.runs
 let restarts t = List.rev t.restarts
 
@@ -37,20 +34,21 @@ module Net = struct
   let getnameinfo _ _ = no ()
 
   let getaddrinfo t ~service:_ host =
-    let at = 1 + Option.value ~default:0 (Hashtbl.find_opt t.ranks host) in
-    Hashtbl.replace t.ranks host at;
     let op =
       {
         Eio_chaos.Op.device = "net";
         kind = "resolve";
         target = host;
-        at;
+        offset = 0;
         length = 0;
+        detail = "";
+        structure = Every;
+        changes = Never;
       }
     in
     match Eio_chaos.decide t.chaos op ~name:fault_name [ Timeout; Refused ] with
     | Some f ->
-        let key = Fmt.str "net:resolve:%s@%d=%s" host at (fault_name f) in
+        let key = Fmt.str "resolve:%s=%s" host (fault_name f) in
         (match t.runs with
         | r :: rs -> t.runs <- (key :: r) :: rs
         | [] -> t.runs <- [ [ key ] ]);
@@ -65,14 +63,18 @@ module Part = struct
   type nonrec t = t
 
   let name = "net"
+  let noun = "network operation"
+  let pp_op = Eio_chaos.Op.pp
 
   let start t ~os:_ ~sw:_ ~clock:_ ~mono_clock:_ chaos =
     t.chaos <- chaos;
-    Hashtbl.reset t.ranks;
     t.runs <- [] :: t.runs;
     capability t
 
-  let restart t ~power =
+  let run t ~cut:_ ~faults:_ = capability t
+  let cut _ = []
+
+  let restart t ~power ~cut:_ =
     t.restarts <- power :: t.restarts;
     capability t
 end

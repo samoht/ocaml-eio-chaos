@@ -4,11 +4,11 @@ synopsis:
   "Chaos tests of Eio programs on simulated devices that fail together"
 description: """
 eio-chaos runs an Eio program many times on simulated devices, each
-time with one failure the real kernel can produce, and restarts it on what the
-failure left. The devices are parts that other packages provide, such as a disk
-or a network. Eio_chaos.run builds the program's env from them, with simulated
-clocks, seeded entropy and captured output, and reports the first failure with
-a line that replays it."""
+time with a failure the real kernel can produce or a power cut, and restarts it
+on what the failure left. The devices are parts that other packages provide,
+such as a disk or a network. Eio_chaos.run builds the program's env from them,
+with simulated clocks, seeded entropy and captured output, and reports the
+first failure with a line that replays it."""
 maintainer: ["Thomas Gazagnaire <thomas@gazagnaire.org>"]
 authors: ["Thomas Gazagnaire <thomas@gazagnaire.org>"]
 license: "ISC"
@@ -27,6 +27,7 @@ depends: [
   "domain-local-await"
   "mdx" {with-test & >= "2.3.0"}
   "alcotest" {with-test & >= "1.7.0"}
+  "alcobar" {with-test}
   "odoc" {with-doc}
 ]
 build: [
