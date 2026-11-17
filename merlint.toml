@@ -1,0 +1,12 @@
+# A copy of Eio_mock's scheduler, kept as close to it as the changes allow,
+# as eio-fs's and eio-net's copies are.
+[[rules]]
+files = ["lib/quiet_mock.ml"]
+exclude = ["E005"]
+
+# A check reports whatever a program raises as the failure of a run, and a
+# power cut ends the program whatever it raised: any exception that escapes
+# the program is the run's outcome.
+[[rules]]
+files = ["lib/eio_chaos.ml"]
+exclude = ["E105"]
