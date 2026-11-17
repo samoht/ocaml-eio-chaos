@@ -29,7 +29,7 @@ a line that replays it.")
   (ocaml (>= 5.4))
   (eio (>= 1.7))
   fmt
-  cstruct
+  (cstruct (>= 6.2.0))
   mtime
   psq
   domain-local-await
