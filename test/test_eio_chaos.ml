@@ -279,22 +279,26 @@ let refused_replay f =
   | () -> Alcotest.fail "the replay ran"
   | exception Invalid_argument m -> m
 
-(* A report under macOS replays under macOS: its line passes ~os, its key
-   names the kernel, and a replay under the other kernel is refused. *)
-let replay_macos () =
-  let r = Expect.report (restart_fails ~os:`Macos) in
+(* A report under macOS or Windows replays under that kernel: its line
+   passes ~os, its key names the kernel, and a replay under another kernel is
+   refused. *)
+let replay_under (os : Eio_chaos.os) ~arg ~kernel () =
+  let r = Expect.report (restart_fails ~os) in
   let line = Expect.field "replay" r in
-  if not (String.starts_with ~prefix:"Eio_chaos.run ~os:`Macos ~replay:" line)
+  if
+    not (String.starts_with ~prefix:("Eio_chaos.run " ^ arg ^ " ~replay:") line)
   then Alcotest.failf "the replay does not pass ~os: %s" r;
   let key = Expect.replay r in
   Alcotest.(check string)
     "the replay fails the same way" r
-    (Expect.report (restart_fails ~os:`Macos ~replay:key));
+    (Expect.report (restart_fails ~os ~replay:key));
   let m = refused_replay (restart_fails ~replay:key) in
-  if not (Expect.contains m "~os:`Macos") then
+  if not (Expect.contains m arg) then
     Alcotest.failf "the refusal does not say to pass ~os: %s" m;
+  if not (Expect.contains m kernel) then
+    Alcotest.failf "the refusal does not name %s: %s" kernel m;
   let linux = Expect.replay (Expect.report restart_fails) in
-  let m = refused_replay (restart_fails ~os:`Macos ~replay:linux) in
+  let m = refused_replay (restart_fails ~os ~replay:linux) in
   if not (Expect.contains m "Linux") then
     Alcotest.failf "the refusal does not name Linux: %s" m
 
@@ -653,7 +657,10 @@ let suite =
       Alcotest.test_case "another exception fails" `Quick other_exception;
       Alcotest.test_case "a hang fails" `Quick hang;
       Alcotest.test_case "a replay fails the same way" `Quick replay;
-      Alcotest.test_case "a replay under macOS" `Quick replay_macos;
+      Alcotest.test_case "a replay under macOS" `Quick
+        (replay_under `Macos ~arg:"~os:`Macos" ~kernel:"macOS");
+      Alcotest.test_case "a replay under Windows" `Quick
+        (replay_under `Windows ~arg:"~os:`Windows" ~kernel:"Windows");
       Alcotest.test_case "a shortcut names its reports" `Quick named;
       Alcotest.test_case "two parts, and a pair across them" `Quick two_parts;
       Alcotest.test_case "a cut's lines name their part" `Quick cut_labelled;

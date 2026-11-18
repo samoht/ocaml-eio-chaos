@@ -32,7 +32,7 @@ val quiet : part -> part
     operations [None]. It is still restarted, and still keeps what a restart
     keeps. *)
 
-type os = [ `Linux | `Macos ]
+type os = [ `Linux | `Macos | `Windows ]
 (** The type for the kernels a part follows. *)
 
 type t
@@ -153,11 +153,11 @@ val run :
       run across the parts, what the program printed, the error, and the line to
       paste that runs it alone, as
       [Eio_chaos.run ~replay:"fs+net/85d85f49/fs:write:1.eio" parts app]. The
-      line passes [~os:`Macos] for a run under macOS, whose replay string names
-      the kernel. Left uncaught, the report prints in the colours of console's
-      theme where the program gave [Fmt.stderr] colour, as
-      [Console_tty.setup ()] does on a terminal, and as its text elsewhere.
-      Caught, [Printexc.to_string] of it is its text.
+      line passes [~os:`Macos] for a run under macOS, or [~os:`Windows] under
+      Windows, whose replay string names the kernel. Left uncaught, the report
+      prints in the colours of console's theme where the program gave
+      [Fmt.stderr] colour, as [Console_tty.setup ()] does on a terminal, and as
+      its text elsewhere. Caught, [Printexc.to_string] of it is its text.
     @raise Invalid_argument
       if [budget] is not positive, [replay] is not a replay string of these
       parts under [os], or two of [parts] have the same name or give the same

@@ -599,7 +599,7 @@ let lost t what =
 
 (* {1 Parts} *)
 
-type os = [ `Linux | `Macos ]
+type os = [ `Linux | `Macos | `Windows ]
 
 type capability =
   | Fs of Eio.Fs.dir_ty Eio.Path.t * Eio.Fs.dir_ty Eio.Path.t
@@ -1165,13 +1165,28 @@ let output out =
   let s = String.trim (Output.printed out) in
   ("output", String.concat "\n            " (String.split_on_char '\n' s))
 
-(* [NAMES/HASH/KEY], with [/macos] after [NAMES] for a check under macOS. *)
+(* What a replay string spells the kernel as, after [NAMES], the argument
+   that passes it and how a report names it. *)
+let os_key = function
+  | `Linux -> ""
+  | `Macos -> "/macos"
+  | `Windows -> "/windows"
+
+let os_arg = function
+  | `Linux -> ""
+  | `Macos -> " ~os:`Macos"
+  | `Windows -> " ~os:`Windows"
+
+let os_name = function
+  | `Linux -> "Linux"
+  | `Macos -> "macOS"
+  | `Windows -> "Windows"
+
+(* [NAMES/HASH/KEY], with [/macos] or [/windows] after [NAMES] for a check
+   under macOS or Windows. *)
 let replay_string cfg hash key =
   let names = String.concat "+" (List.map part_name cfg.parts) in
-  let os = match cfg.os with `Linux -> "" | `Macos -> "/macos" in
-  Fmt.str "%s%s/%s/%s" names os hash key
-
-let os_arg = function `Linux -> "" | `Macos -> " ~os:`Macos"
+  Fmt.str "%s%s/%s/%s" names (os_key cfg.os) hash key
 
 (* The trace of a run, if it has an operation to show. *)
 let steps cfg (t : record) =
@@ -1827,7 +1842,7 @@ let check_parts name parts =
 
 (* [NAMES/HASH/KEY], [NAMES] the names of the parts joined by [+] and
    [HASH] eight hexadecimal digits, in either case; [NAMES/macos/HASH/KEY]
-   under macOS. *)
+   under macOS and [NAMES/windows/HASH/KEY] under Windows. *)
 let parse_replay ~name ~names ~os ~single ~passes r =
   let bad () =
     Fmt.invalid_arg "%s: replay is %S, not a replay string of this check" name r
@@ -1836,22 +1851,25 @@ let parse_replay ~name ~names ~os ~single ~passes r =
     | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
     | _ -> false
   in
-  let macos = names ^ "/macos/" in
   let printed, prefix =
-    if String.starts_with ~prefix:macos r then (`Macos, macos)
-    else (`Linux, names ^ "/")
+    match
+      List.find_opt
+        (fun o -> String.starts_with ~prefix:(names ^ os_key o ^ "/") r)
+        [ `Macos; `Windows ]
+    with
+    | Some o -> (o, names ^ os_key o ^ "/")
+    | None -> (`Linux, names ^ "/")
   in
   if not (String.starts_with ~prefix r) then bad ()
   else if printed <> os then
     match printed with
-    | `Macos ->
-        Fmt.invalid_arg
-          "%s: replay is %S, printed by a check under macOS: pass ~os:`Macos"
-          name r
+    | `Macos | `Windows ->
+        Fmt.invalid_arg "%s: replay is %S, printed by a check under %s: pass%s"
+          name r (os_name printed) (os_arg printed)
     | `Linux ->
         Fmt.invalid_arg
-          "%s: replay is %S, printed by a check under Linux: drop ~os:`Macos"
-          name r
+          "%s: replay is %S, printed by a check under Linux: drop%s" name r
+          (os_arg os)
   else
     let n = String.length prefix in
     let r' = String.sub r n (String.length r - n) in
@@ -1867,9 +1885,7 @@ let parse_replay ~name ~names ~os ~single ~passes r =
 
 let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
     ?replay ?(setup = ignore) ?(inspect = ignore) parts app =
-  let os =
-    match os with Some `Macos -> `Macos | Some `Linux | None -> `Linux
-  in
+  let os = match os with Some (#os as os) -> os | None -> `Linux in
   let budget =
     match budget with
     | None -> 20_000
@@ -1928,9 +1944,7 @@ module Private = struct
     | None -> false
 
   let within ?os parts f =
-    let os =
-      match os with Some `Macos -> `Macos | Some `Linux | None -> `Linux
-    in
+    let os = match os with Some (#os as os) -> os | None -> `Linux in
     let halted = ref None in
     match
       in_loop ~halted @@ fun clock mono _ ->
