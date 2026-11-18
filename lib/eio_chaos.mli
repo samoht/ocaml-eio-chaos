@@ -107,7 +107,7 @@ val run :
       during the restart, and the other states a cut may leave.
 
     Each pass has two tiers. The linear tier runs whole, at the operations
-    {!Op.type-structure} picks, of the instances {!Op.t.instance} picks, and at
+    {!Op.type-structure} picks, of the instances {!Op.instance} picks, and at
     the places those operations made: the runs of two parts add up, they do not
     multiply. The sampled tier spends a fortieth of [budget] (defaults to
     [20_000]), or half as much as the linear tier if that is more, on runs drawn
@@ -170,7 +170,7 @@ val run :
     allows there, and acts out the answer. A part that moves bytes gives with
     {!places} the places inside an operation where a fault may land, and acts
     out one that lands there after the bytes {!place} says. Its operations name
-    an {!Op.t.instance}, as the connection of an end, so that the linear tier
+    an {!Op.instance}, as the connection of an end, so that the linear tier
     tries a few of many instances alike rather than each. A condition of the
     whole run, such as an outage, it proposes at its first operation and acts
     out from the start of the run, which [run ~faults] of {!PART} names. *)
@@ -204,33 +204,70 @@ module Op : sig
     | Maybe  (** Only where the part says it did, with {!Eio_chaos.changed}. *)
     | Always  (** Each time, as a write. *)
 
-  type t = {
-    device : string;  (** The part's name: ["fs"], ["net"]. *)
-    kind : string;  (** ["write"], ["sync"], ["connect"], ["read"]. *)
-    target : string;
-        (** What the operation is on: a path, or a connection and its side, as
-            ["1c"]. *)
-    instance : string;
-        (** What {!field-target} is a part of among others alike, as the
-            connection ["1"] of its ends ["1c"] and ["1s"], else [""]. Of the
-            instances of a part, the linear tier tries the first three, the last
-            and the first of each shape, and leaves the others to the sampled
-            tier. The shape of an instance is the kinds, details and length
-            classes of its operations, on each of its targets named past the
-            instance's own name. *)
-    offset : int;  (** Where a read or a write starts, else [0]. *)
-    length : int;  (** The bytes a read asks for or a write offers, else [0]. *)
-    detail : string;
-        (** What else tells two changes apart, as a rename's destination, else
-            [""]. *)
-    structure : structure;
-        (** Whether the linear tier tries the operation, by its kind and its
-            target. *)
-    changes : changes;  (** Whether a power cut is tried after it. *)
-  }
+  type t
   (** The type for operations. A check aims a fault at an operation by its part,
       its kind and its rank among the operations of that kind of that part, so
       the targets a program names may differ from run to run. *)
+
+  val v :
+    ?instance:string ->
+    ?offset:int ->
+    ?length:int ->
+    ?detail:string ->
+    ?structure:structure ->
+    device:string ->
+    kind:string ->
+    changes:changes ->
+    string ->
+    t
+  (** [v ~instance ~offset ~length ~detail ~structure ~device ~kind ~changes
+       target] is the operation of kind [kind] of the part [device] on [target],
+      with:
+
+      - [instance] (defaults to [""]): what [target] is a part of among others
+        alike, as the connection ["1"] of its ends ["1c"] and ["1s"]. Of the
+        instances of a part, the linear tier tries the first three, the last and
+        the first of each shape, and leaves the others to the sampled tier. The
+        shape of an instance is the kinds, details and length classes of its
+        operations, on each of its targets named past the instance's own name;
+      - [offset] (defaults to [0]): where a read or a write starts;
+      - [length] (defaults to [0]): the bytes a read asks for or a write offers;
+      - [detail] (defaults to [""]): what else tells two changes apart, as a
+        rename's destination;
+      - [structure] (defaults to {!Every}): whether the linear tier tries the
+        operation, by its kind and its target;
+      - [device]: the part's name, {!PART.name}: ["fs"], ["net"];
+      - [kind]: ["write"], ["sync"], ["connect"], ["read"];
+      - [changes]: whether a power cut is tried after it;
+      - [target]: what the operation is on, a path, or a connection and its
+        side, as ["1c"]. *)
+
+  val device : t -> string
+  (** [device op] is the part [op] is of. *)
+
+  val kind : t -> string
+  (** [kind op] is the kind of [op]. *)
+
+  val target : t -> string
+  (** [target op] is what [op] is on. *)
+
+  val instance : t -> string
+  (** [instance op] is what the target of [op] is a part of, or [""]. *)
+
+  val offset : t -> int
+  (** [offset op] is where [op] starts, or [0]. *)
+
+  val length : t -> int
+  (** [length op] is the bytes [op] moves, or [0]. *)
+
+  val detail : t -> string
+  (** [detail op] is what else tells [op] apart, or [""]. *)
+
+  val structure : t -> structure
+  (** [structure op] is whether the linear tier tries [op]. *)
+
+  val changes : t -> changes
+  (** [changes op] is whether [op] changes what its part keeps. *)
 
   val pp : t Fmt.t
   (** [pp] formats an operation as a trace line shows it by default:

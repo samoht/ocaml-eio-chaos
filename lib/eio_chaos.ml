@@ -151,10 +151,12 @@ let compare_step d (step : Plan.step) =
       let x = d.against.(i) in
       if
         not
-          (String.equal x.op.device step.op.device
-          && String.equal x.op.kind step.op.kind)
+          (String.equal (Op.device x.op) (Op.device step.op)
+          && String.equal (Op.kind x.op) (Op.kind step.op))
       then d.kinds <- Some (Some x, Some step)
-      else if d.targets = None && not (String.equal x.op.target step.op.target)
+      else if
+        d.targets = None
+        && not (String.equal (Op.target x.op) (Op.target step.op))
       then d.targets <- Some (Some x, Some step)
 
 (* The first difference in kinds, once the second run has ended. *)
@@ -167,7 +169,7 @@ let kinds_differ d =
 
 (* The number and the rank of the next operation of [r]. *)
 let number r (op : Op.t) =
-  let k = (op.device, op.kind) in
+  let k = (Op.device op, Op.kind op) in
   let rank = 1 + Option.value ~default:0 (Hashtbl.find_opt r.ranks k) in
   Hashtbl.replace r.ranks k rank;
   r.last <- r.last + 1;
@@ -201,8 +203,8 @@ type target = string * string * [ `Target | `Dir ] * string
 
 let targets (op : Op.t) : target list =
   [
-    (op.device, op.kind, `Target, op.target);
-    (op.device, op.kind, `Dir, Recorder.parent op.target);
+    (Op.device op, Op.kind op, `Target, Op.target op);
+    (Op.device op, Op.kind op, `Dir, Recorder.parent (Op.target op));
   ]
 
 (* How often the first run made each operation. *)
@@ -375,7 +377,7 @@ let scheduled st (step : Plan.step) ~name ~once ~lasting ~alone ~mild =
   match st.scenario.lasting with
   | Some l ->
       if Plan.at l.pos step then st.on <- true;
-      if st.on && String.equal l.pos.device step.op.device then
+      if st.on && String.equal l.pos.device (Op.device step.op) then
         Option.map (fun f -> (f, 0)) (find name lasting l.name)
       else None
   | None ->
@@ -412,7 +414,9 @@ let cut_matches (c : Plan.cut option) step =
 let shared st (op : Op.t) =
   match st.last_op with
   | Some o
-    when Op.same o op && o.structure = op.structure && o.changes = op.changes ->
+    when Op.same o op
+         && Op.structure o = Op.structure op
+         && Op.changes o = Op.changes op ->
       o
   | _ ->
       st.last_op <- Some op;
@@ -1055,11 +1059,11 @@ let pp_op cfg ppf (op : Op.t) =
   let pp =
     List.find_map
       (fun (Part { m = (module P); _ }) ->
-        if String.equal P.name op.device then Some P.pp_op else None)
+        if String.equal P.name (Op.device op) then Some P.pp_op else None)
       cfg.parts
     |> Option.value ~default:Op.pp
   in
-  if cfg.single then pp ppf op else Fmt.pf ppf "%s %a" op.device pp op
+  if cfg.single then pp ppf op else Fmt.pf ppf "%s %a" (Op.device op) pp op
 
 let pp_step cfg ppf (e : Recorder.entry) =
   Fmt.pf ppf "#%d %a" e.index (pp_op cfg) e.op
@@ -1462,7 +1466,7 @@ let check_errors cfg ~budget ~replay =
   some
   && List.exists
        (fun (s : Plan.step) ->
-         match s.op.changes with Never -> false | Maybe | Always -> true)
+         match Op.changes s.op with Never -> false | Maybe | Always -> true)
        first
 
 (* {1 Runs with a cut} *)

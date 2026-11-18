@@ -111,24 +111,18 @@ let op_gen =
       let structure =
         match s with 0 -> Op.Every | 1 -> Op.Thin | _ -> Op.After "write"
       in
-      {
-        Op.device = "fs";
-        kind;
-        target = Fmt.str "/f%d" t;
-        instance = (if i < 2 then "" else Fmt.str "i%d" (t + i));
-        offset = 0;
-        length;
-        detail = "";
-        structure;
-        changes = Never;
-      })
+      let instance = if i < 2 then "" else Fmt.str "i%d" (t + i) in
+      Fmt.kstr
+        (Op.v ~instance ~length ~structure ~device:"fs" ~kind ~changes:Never)
+        "/f%d" t)
 
 let trace ops =
   let ranks = Hashtbl.create 8 in
   List.mapi
     (fun i (op : Op.t) ->
-      let rank = 1 + Option.value ~default:0 (Hashtbl.find_opt ranks op.kind) in
-      Hashtbl.replace ranks op.kind rank;
+      let kind = Op.kind op in
+      let rank = 1 + Option.value ~default:0 (Hashtbl.find_opt ranks kind) in
+      Hashtbl.replace ranks kind rank;
       { Plan.index = i + 1; op; rank; faults = No_faults; places = [] })
     ops
 
@@ -141,7 +135,7 @@ let test_structural ops =
     (List.map index t);
   List.iter
     (fun (s : Plan.step) ->
-      if s.op.structure = Every && s.op.instance = "" then
+      if Op.structure s.op = Every && Op.instance s.op = "" then
         failf "#%d is Every and not kept" s.index)
     rest;
   (* Sure holds for no operation [structural] leaves out. *)

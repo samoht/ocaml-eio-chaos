@@ -30,19 +30,7 @@ module Net = struct
   let getnameinfo _ _ = refuse ()
 
   let getaddrinfo t ~service:_ host =
-    let op =
-      {
-        Eio_chaos.Op.device = "dns";
-        kind = "lookup";
-        target = host;
-        instance = "";
-        offset = 0;
-        length = 0;
-        detail = "";
-        structure = Every;
-        changes = Never;
-      }
-    in
+    let op = Eio_chaos.Op.v ~device:"dns" ~kind:"lookup" ~changes:Never host in
     match
       Eio_chaos.decide t.chaos op ~name:fault_name ~pp:pp_fault
         [ Timeout; Refused ]

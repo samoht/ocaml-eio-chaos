@@ -73,17 +73,8 @@ let log t key =
 let ask t ?lasting ?mild ?split ~kind ~target ~instance ~structure ~offset
     ~length once =
   let op =
-    {
-      Eio_chaos.Op.device = "link";
-      kind;
-      target;
-      instance;
-      offset;
-      length;
-      detail = "";
-      structure;
-      changes = Never;
-    }
+    Eio_chaos.Op.v ~instance ~offset ~length ~structure ~device:"link" ~kind
+      ~changes:Never target
   in
   let f =
     Eio_chaos.decide t.chaos op ~name:fault_name ?lasting ?mild ?split once

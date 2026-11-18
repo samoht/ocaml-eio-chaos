@@ -34,19 +34,7 @@ module Net = struct
   let getnameinfo _ _ = no ()
 
   let getaddrinfo t ~service:_ host =
-    let op =
-      {
-        Eio_chaos.Op.device = "net";
-        kind = "resolve";
-        target = host;
-        instance = "";
-        offset = 0;
-        length = 0;
-        detail = "";
-        structure = Every;
-        changes = Never;
-      }
-    in
+    let op = Eio_chaos.Op.v ~device:"net" ~kind:"resolve" ~changes:Never host in
     match Eio_chaos.decide t.chaos op ~name:fault_name [ Timeout; Refused ] with
     | Some f ->
         let key = Fmt.str "resolve:%s=%s" host (fault_name f) in

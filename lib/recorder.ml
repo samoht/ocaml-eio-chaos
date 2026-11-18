@@ -10,7 +10,8 @@ let parent path =
 
 (* What a repeated operation keeps: its part, its kind, the directory it is
    in and its fault, so a retry under one name or under fresh ones repeats. *)
-let shape e = (e.op.device, e.op.kind, parent e.op.target, Option.map fst e.met)
+let shape e =
+  (Op.device e.op, Op.kind e.op, parent (Op.target e.op), Option.map fst e.met)
 
 (* The lines of a trace: an operation, or a block of [period] operations
    repeated, of which the first and the last are shown. *)

@@ -163,19 +163,7 @@ module Net = struct
   let getnameinfo _ _ = refuse ()
 
   let getaddrinfo t ~service:_ host =
-    let op =
-      {
-        Eio_chaos.Op.device = "dns";
-        kind = "lookup";
-        target = host;
-        instance = "";
-        offset = 0;
-        length = 0;
-        detail = "";
-        structure = Every;
-        changes = Never;
-      }
-    in
+    let op = Eio_chaos.Op.v ~device:"dns" ~kind:"lookup" ~changes:Never host in
     match
       Eio_chaos.decide t.chaos op ~name:fault_name ~pp:pp_fault
         [ Timeout; Refused ]
@@ -212,6 +200,10 @@ let resolver () = Part.v { chaos = Eio_chaos.none }
   operation fails, with the faults the kernel allows there, and acts out the
   answer. In production it passes `Eio_chaos.none`, which never fails
   anything.
+- `Eio_chaos.Op.v` describes the operation: its part, its kind, its target
+  and whether it changes what the part keeps across a power cut. A lookup
+  changes nothing. Its optional arguments say what only some parts know,
+  such as the offset and length of a write.
 - `start` makes the part new for each run: it forgets what an earlier run
   left and takes the run's `chaos`, which is all the resolver holds. It is
   the capability that `~setup` gets. A part gives one capability, `Eio_chaos.Fs (fs, cwd)` for `env#fs`

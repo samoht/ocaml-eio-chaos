@@ -44,12 +44,13 @@ type step = {
 
 type trace = step list
 
-let pos s = { device = s.op.device; kind = s.op.kind; rank = s.rank; at = 0 }
+let pos s =
+  { device = Op.device s.op; kind = Op.kind s.op; rank = s.rank; at = 0 }
 
 let at (p : pos) (s : step) =
   s.rank = p.rank
-  && String.equal s.op.kind p.kind
-  && String.equal s.op.device p.device
+  && String.equal (Op.kind s.op) p.kind
+  && String.equal (Op.device s.op) p.device
 
 let allowed s =
   match s.faults with
@@ -75,15 +76,14 @@ let length_class n =
   let rec go c n = if n <= 1 then c else go (c + 1) (n lsr 1) in
   go 0 n
 
-let group (op : Op.t) = (op.device, op.kind, op.target)
+let group (op : Op.t) = (Op.device op, Op.kind op, Op.target op)
 
 (* The rest of a target's name past that of its instance. *)
 let suffix (op : Op.t) =
-  let i = op.instance in
-  if String.starts_with ~prefix:i op.target then
-    String.sub op.target (String.length i)
-      (String.length op.target - String.length i)
-  else op.target
+  let i = Op.instance op and target = Op.target op in
+  if String.starts_with ~prefix:i target then
+    String.sub target (String.length i) (String.length target - String.length i)
+  else target
 
 (* Of the instances of each part, in the order the trace met them: the first
    three, the last, and the first of each shape, the kinds, details and
@@ -93,8 +93,8 @@ let instances (trace : trace) =
   List.iter
     (fun s ->
       let op = s.op in
-      if op.instance <> "" then begin
-        let k = (op.device, op.instance) in
+      if Op.instance op <> "" then begin
+        let k = (Op.device op, Op.instance op) in
         let l =
           match Hashtbl.find_opt shapes k with
           | Some l -> l
@@ -103,7 +103,8 @@ let instances (trace : trace) =
               []
         in
         Hashtbl.replace shapes k
-          ((op.kind, suffix op, op.detail, length_class op.length) :: l)
+          ((Op.kind op, suffix op, Op.detail op, length_class (Op.length op))
+          :: l)
       end)
     trace;
   let parts = Hashtbl.create 4 in
@@ -125,7 +126,7 @@ let instances (trace : trace) =
         ks)
     parts;
   fun (op : Op.t) ->
-    op.instance = "" || Hashtbl.mem keep (op.device, op.instance)
+    Op.instance op = "" || Hashtbl.mem keep (Op.device op, Op.instance op)
 
 (* Of the operations of one kind on one target that thin: the first three,
    the last, and the first of each length class, so a log of many records
@@ -135,7 +136,7 @@ let structural (trace : trace) =
   let per = Hashtbl.create 7 in
   List.iter
     (fun s ->
-      match s.op.structure with
+      match Op.structure s.op with
       | Thin ->
           let k = group s.op in
           Hashtbl.replace per k
@@ -149,7 +150,7 @@ let structural (trace : trace) =
       let n = List.length steps and seen = Hashtbl.create 8 in
       List.iteri
         (fun i s ->
-          let c = length_class s.op.length in
+          let c = length_class (Op.length s.op) in
           let first = not (Hashtbl.mem seen c) in
           Hashtbl.replace seen c ();
           if i < 3 || i = n - 1 || first then Hashtbl.replace keep s.index ())
@@ -160,13 +161,15 @@ let structural (trace : trace) =
     (fun s ->
       kept s.op
       &&
-      match s.op.structure with
+      match Op.structure s.op with
       | Every -> true
       | Thin ->
           Hashtbl.replace last (group s.op) s.index;
           Hashtbl.mem keep s.index
       | After kind -> (
-          match Hashtbl.find_opt last (s.op.device, kind, s.op.target) with
+          match
+            Hashtbl.find_opt last (Op.device s.op, kind, Op.target s.op)
+          with
           | None -> true
           | Some i -> Hashtbl.mem keep i))
     trace
@@ -193,21 +196,23 @@ module Sure = struct
 
   (* One of the first three instances of its part. *)
   let instance t (op : Op.t) =
-    op.instance = ""
+    Op.instance op = ""
     ||
-    let k = (op.device, op.instance) in
+    let k = (Op.device op, Op.instance op) in
     match Hashtbl.find_opt t.instances k with
     | Some sure -> sure
     | None ->
-        let n = Option.value ~default:0 (Hashtbl.find_opt t.counts op.device) in
-        Hashtbl.replace t.counts op.device (n + 1);
+        let n =
+          Option.value ~default:0 (Hashtbl.find_opt t.counts (Op.device op))
+        in
+        Hashtbl.replace t.counts (Op.device op) (n + 1);
         Hashtbl.replace t.instances k (n < 3);
         n < 3
 
   let add t (op : Op.t) =
     instance t op
     &&
-    match op.structure with
+    match Op.structure op with
     | Every -> true
     | Thin ->
         let k = group op in
@@ -216,7 +221,7 @@ module Sure = struct
           | Some v -> v
           | None -> (0, Hashtbl.create 4)
         in
-        let c = length_class op.length in
+        let c = length_class (Op.length op) in
         let sure = n < 3 || not (Hashtbl.mem classes c) in
         Hashtbl.replace classes c ();
         Hashtbl.replace t.seen k (n + 1, classes);
@@ -224,7 +229,7 @@ module Sure = struct
         sure
     | After kind ->
         Option.value ~default:true
-          (Hashtbl.find_opt t.last (op.device, kind, op.target))
+          (Hashtbl.find_opt t.last (Op.device op, kind, Op.target op))
 end
 
 (* {1 Sampling} *)
@@ -634,7 +639,7 @@ let others trace =
 let is_alone s = List.exists (fun f -> f.alone) s.faults
 
 let changes (op : Op.t) =
-  match op.changes with Never -> false | Maybe | Always -> true
+  match Op.changes op with Never -> false | Maybe | Always -> true
 
 (* The changes a run made, in order: what tells whether a fault changed its
    course. *)
@@ -727,7 +732,9 @@ let cut_points ~changed (trace : trace) ops =
     List.filter_map
       (fun s ->
         let changes =
-          match s.op.changes with Always -> true | Never | Maybe -> changed s
+          match Op.changes s.op with
+          | Always -> true
+          | Never | Maybe -> changed s
         in
         if changes then
           Option.map
@@ -791,7 +798,7 @@ let cut_seconds ?(limit = max_int) ~rng one ~first ~(after : trace) =
 let cut_floor ~sure ~changed ~durable (op : Op.t) =
   if not sure then 0
   else
-    (match op.changes with
+    (match Op.changes op with
       | Always -> 2
       | Maybe | Never -> if changed then 2 else 0)
     + (2 * durable)

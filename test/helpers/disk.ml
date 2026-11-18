@@ -55,7 +55,8 @@ let norm p =
   if String.starts_with ~prefix:"/" p then String.sub p 1 (String.length p - 1)
   else p
 
-let pp_op ppf (op : Eio_chaos.Op.t) = Fmt.pf ppf "%s %s" op.kind op.target
+let pp_op ppf op =
+  Fmt.pf ppf "%s %s" (Eio_chaos.Op.kind op) (Eio_chaos.Op.target op)
 
 (* Asks the run whether [kind] on [target] fails, logs the answer, and takes
    the operation's time if it does not. *)
@@ -63,17 +64,7 @@ let ask (t, gen) ?(time = op_time) ?lasting ?durable ?alone ~structure ~changes
     kind target ~length once =
   if gen <> t.gen then raise (error "the power was cut");
   let op =
-    {
-      Eio_chaos.Op.device = "fs";
-      kind;
-      target;
-      instance = "";
-      offset = 0;
-      length;
-      detail = "";
-      structure;
-      changes;
-    }
+    Eio_chaos.Op.v ~length ~structure ~device:"fs" ~kind ~changes target
   in
   let f =
     Eio_chaos.decide t.chaos op ~name:fault_name ~pp:pp_fault ?lasting ?durable
