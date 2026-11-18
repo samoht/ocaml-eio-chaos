@@ -39,6 +39,7 @@ module Net = struct
         Eio_chaos.Op.device = "net";
         kind = "resolve";
         target = host;
+        instance = "";
         offset = 0;
         length = 0;
         detail = "";
@@ -65,6 +66,7 @@ module Part = struct
   let name = "net"
   let noun = "network operation"
   let pp_op = Eio_chaos.Op.pp
+  let indeterminate _ = false
 
   let start t ~os:_ ~sw:_ ~clock:_ ~mono_clock:_ chaos =
     t.chaos <- chaos;

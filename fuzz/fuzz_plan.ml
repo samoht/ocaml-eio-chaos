@@ -33,12 +33,13 @@ let test_share budget linear classes =
 
 let pos_gen =
   map
-    [ range 3; range 1000 ]
-    (fun k rank ->
+    [ range 3; range 1000; choose [ const 0; range 100 ] ]
+    (fun k rank at ->
       {
         Plan.device = "fs";
         kind = List.nth [ "write"; "sync"; "open" ] k;
         rank;
+        at;
       })
 
 let state_gen =
@@ -104,8 +105,8 @@ let test_pairs cap adds =
 
 let op_gen =
   map
-    [ range 3; range 3; range 4; range 2000 ]
-    (fun k s t length ->
+    [ range 3; range 3; range 4; range 2000; range 6 ]
+    (fun k s t length i ->
       let kind = List.nth [ "write"; "sync"; "stat" ] k in
       let structure =
         match s with 0 -> Op.Every | 1 -> Op.Thin | _ -> Op.After "write"
@@ -114,6 +115,7 @@ let op_gen =
         Op.device = "fs";
         kind;
         target = Fmt.str "/f%d" t;
+        instance = (if i < 2 then "" else Fmt.str "i%d" (t + i));
         offset = 0;
         length;
         detail = "";
@@ -127,7 +129,7 @@ let trace ops =
     (fun i (op : Op.t) ->
       let rank = 1 + Option.value ~default:0 (Hashtbl.find_opt ranks op.kind) in
       Hashtbl.replace ranks op.kind rank;
-      { Plan.index = i + 1; op; rank; faults = No_faults })
+      { Plan.index = i + 1; op; rank; faults = No_faults; places = [] })
     ops
 
 let test_structural ops =
@@ -139,7 +141,8 @@ let test_structural ops =
     (List.map index t);
   List.iter
     (fun (s : Plan.step) ->
-      if s.op.structure = Every then failf "#%d is Every and not kept" s.index)
+      if s.op.structure = Every && s.op.instance = "" then
+        failf "#%d is Every and not kept" s.index)
     rest;
   (* Sure holds for no operation [structural] leaves out. *)
   let sure = Plan.Sure.v () in

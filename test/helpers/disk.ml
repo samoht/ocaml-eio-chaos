@@ -67,6 +67,7 @@ let ask (t, gen) ?(time = op_time) ?lasting ?durable ?alone ~structure ~changes
       Eio_chaos.Op.device = "fs";
       kind;
       target;
+      instance = "";
       offset = 0;
       length;
       detail = "";
@@ -168,6 +169,7 @@ module Part = struct
   let name = "fs"
   let noun = "disk operation"
   let pp_op = pp_op
+  let indeterminate _ = false
 
   let start t ~os:_ ~sw:_ ~clock:_ ~mono_clock:_ chaos =
     t.chaos <- chaos;
