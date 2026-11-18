@@ -1,14 +1,15 @@
 (** The scenarios of a check, as pure functions of a recorded run. *)
 
-type pos = { device : string; kind : string; rank : int }
+type pos = { device : string; kind : string; rank : int; at : int }
 (** The type for the place of an operation in a run: its part, its kind and its
-    rank among the operations of that kind of that part, on any target. Each run
-    of a check makes the same operations up to its first fault, whatever names
-    it gives its targets, so a position is found again in another run. *)
+    rank among the operations of that kind of that part, on any target, and the
+    bytes into it a fault lands after, [0] at its start. Each run of a check
+    makes the same operations up to its first fault, whatever names it gives its
+    targets, so a position is found again in another run. *)
 
 val pos_key : single:bool -> pos -> string
 (** [pos_key ~single p] names [p] in a key: [kind:rank], after [device:] unless
-    [single]. *)
+    [single], and before [@at] if [at] is not [0]. *)
 
 (** {1 Traces} *)
 
@@ -21,6 +22,7 @@ type allowed = {
   lasting : named list;
   durable : named list;
   alone : named list;
+  mild : named list;
 }
 (** The type for the faults a part allows at an operation, by class. *)
 
@@ -34,12 +36,21 @@ type faults =
       lasting : 'f list;
       durable : 'f list;
       alone : 'f list;
+      mild : 'f list;
     }
       -> faults
 
-type step = { index : int; op : Op.t; rank : int; faults : faults }
+type step = {
+  index : int;
+  op : Op.t;
+  rank : int;
+  faults : faults;
+  mutable places : (int * int) list;
+}
 (** The type for an operation a run made: its place in the run, from [1], its
-    rank among those of its part and kind, and the faults allowed there. *)
+    rank among those of its part and kind, the faults allowed there, and the
+    places inside it its {!field-once} faults may land at too: [(k, j)] is after
+    [k] bytes, a place operation [j] made. *)
 
 type trace = step list
 (** The type for a run's operations, in order. *)
@@ -48,14 +59,17 @@ val pos : step -> pos
 (** [pos s] is the place of [s]. *)
 
 val at : pos -> step -> bool
-(** [at p s] is [true] iff [s] is at [p]. *)
+(** [at p s] is [true] iff [s] is the operation of [p], whatever its [at]. *)
 
 val allowed : step -> allowed
 (** [allowed s] is the faults allowed at [s], named. *)
 
 val structural : trace -> trace * trace
 (** [structural t] is the operations of [t] a check tries first, as each one's
-    {!Op.structure} says, and the others, each in order. *)
+    {!Op.structure} says, of an instance it tries first, and the others, each in
+    order. Of the instances of each part, a check tries first the first three,
+    the last, and the first of each shape: the kinds, details and length classes
+    of its operations, on each of its targets named past the instance. *)
 
 (** The operations sure to be structural as a run goes. *)
 module Sure : sig
@@ -152,12 +166,21 @@ val well_formed : string -> bool
 (** [well_formed k] is [true] iff [k] has the shape of the key of a scenario
     with a cut, its states as {!key} names them. *)
 
+val errors_key : single:bool -> string -> bool
+(** [errors_key ~single k] is [true] iff [k] has the shape of the key of a
+    scenario with no cut, as {!key} names them: ["none"], a lasting condition
+    from its place, or faults at their places. *)
+
 val split_state_key : string -> (string * state) option
 (** [split_state_key k] is the key of the scenario with a cut [k] names, with
     its state replaced by {!constructor-Drop}, and that state. *)
 
 val state_key : state -> string
 (** [state_key st] names [st] in a key. *)
+
+val after_text : string -> int -> string
+(** [after_text text k] is [text], what a fault does, as it does it after [k]
+    bytes of its operation: [text] itself if [k] is [0]. *)
 
 val pos_text : single:bool -> ?at:(pos -> string option) -> pos -> string
 (** [pos_text ~single ~at p] says where [p] is, for a report: as [at p] shows
@@ -178,14 +201,15 @@ val cut_text : single:bool -> ?at:(pos -> string option) -> cut -> string
 
 val linear : trace -> scenario list
 (** [linear first] is each fault of {!field-once} and each lasting condition
-    alone at each structural operation of [first]; then each fault of
-    {!field-alone} there. *)
+    alone at each structural operation of [first], each fault of {!field-once}
+    at each place a structural operation made; then each fault of {!field-alone}
+    at each structural operation. *)
 
 val others : trace -> int * (Random.State.t -> int -> scenario list)
 (** [others first] is the number of scenarios of {!field-once} and
-    {!field-lasting} faults at the other operations of [first], and a function
-    that is [n] of them drawn with [rng], as {!sample} draws them, built only as
-    they are drawn. *)
+    {!field-lasting} faults at the other operations of [first], and at its other
+    places, and a function that is [n] of them drawn with [rng], as {!sample}
+    draws them, built only as they are drawn. *)
 
 val is_alone : scenario -> bool
 (** [is_alone s] is [true] iff [s] holds a fault of {!field-alone}: the linear
@@ -210,13 +234,14 @@ val seconds :
   after:trace ->
   scenario list * scenario list
 (** [seconds ~limit ~rng f ~first ~after] is the pairs of faults whose first is
-    [f] and whose second lands after it in [after], the run [f] alone made, best
-    first, at most [limit] (defaults to all). If [f] changed what the run
-    changes, past [f], from [first], the run with no fault, they are the first
-    list, which aims at the path [f] sent the run down: the operations that may
-    change what a part keeps, then the others, each nearest [f] first. Else they
-    are the second list, drawn with [rng] as {!sample} draws them, in the order
-    {!interleave} gives. *)
+    [f] and whose second, of {!field-once} or {!field-mild} or at a place, lands
+    after it in [after], the run [f] alone made, best first, at most [limit]
+    (defaults to all). If [f] changed what the run changes, past [f], from
+    [first], the run with no fault, they are the first list, which aims at the
+    path [f] sent the run down: the operations that may change what a part
+    keeps, then the others, each nearest [f] first. Else they are the second
+    list, drawn with [rng] as {!sample} draws them, in the order {!interleave}
+    gives. *)
 
 (** {1 Runs with a cut} *)
 

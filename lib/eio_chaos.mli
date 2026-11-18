@@ -60,6 +60,14 @@ module Op : sig
     target : string;
         (** What the operation is on: a path, or a connection and its side, as
             ["1c"]. *)
+    instance : string;
+        (** What {!field-target} is a part of among others alike, as the
+            connection ["1"] of its ends ["1c"] and ["1s"], else [""]. Of the
+            instances of a part, the linear tier tries the first three, the last
+            and the first of each shape, and leaves the others to the sampled
+            tier. The shape of an instance is the kinds, details and length
+            classes of its operations, on each of its targets named past the
+            instance's own name. *)
     offset : int;  (** Where a read or a write starts, else [0]. *)
     length : int;  (** The bytes a read asks for or a write offers, else [0]. *)
     detail : string;
@@ -85,14 +93,17 @@ val decide :
   ?lasting:'fault list ->
   ?durable:'fault list ->
   ?alone:'fault list ->
+  ?mild:'fault list ->
+  ?split:bool ->
   'fault list ->
   'fault option
-(** [decide t op ~name ~pp ~lasting ~durable ~alone once] is the failure [op]
-    meets in this run, if any, among those the kernel can produce at [op], in
-    the part's own type. The part then acts the failure out: [decide] only
-    chooses. [name f] is one word for [f], distinct among the failures listed at
-    [op], which keys show; [pp] (defaults to [name]) says what [f] does, as
-    ["fails with EIO"], which reports show. The failures come in four classes:
+(** [decide t op ~name ~pp ~lasting ~durable ~alone ~mild ~split once] is the
+    failure [op] meets in this run, if any, among those the kernel can produce
+    at [op], in the part's own type. The part then acts the failure out:
+    [decide] only chooses. [name f] is one word for [f], distinct among the
+    failures listed at [op], which keys show; [pp] (defaults to [name]) says
+    what [f] does, as ["fails with EIO"], which reports show. The failures come
+    in four classes:
 
     - [once] fail [op] alone, and pair with a second one later in the run;
     - [lasting] (defaults to none) are conditions: one that starts at [op] holds
@@ -101,7 +112,15 @@ val decide :
     - [durable] (defaults to none) are tried with a power cut after the run, in
       place of [once]: the faults whose effect a cut shows, as a torn write;
     - [alone] (defaults to none) are tried alone, at the operations of the
-      linear tier only, with a cut and without.
+      linear tier only, with a cut and without;
+    - [mild] (defaults to none) are tried only as the second failure of a pair:
+      too slight to test alone, as a read that returns one byte.
+
+    A [once] failure may also land inside [op], at a place {!places} gave it:
+    {!place} then says after how many bytes. [split] (defaults to [false]) says
+    that [op] is one of those a condition of the run split another operation
+    into, as one-byte reads: it does not count towards the operations a run may
+    make, and a report of a run stopped at a limit says how many there were.
 
     It is [None] for {!none}, for a {!quiet} part, outside a run of the program
     and its restart, and during the restart. Once the power is cut, it raises
@@ -111,6 +130,45 @@ val decide :
 val index : t -> int
 (** [index t] is the number {!decide} gave to the operation it was last asked
     about, from [1] in each run and in each restart. *)
+
+val places : t -> int -> (int * int) list -> unit
+(** [places t i l] records that the failures of the operation numbered [i] may
+    also land inside it, at each place [(k, j)] of [l]: after its first [k]
+    bytes, a place the operation numbered [j] made, as the end of the write that
+    sent the bytes a read returned. A part calls it once [i] has moved its
+    bytes. The linear tier tries a place whose [j] it tries, and the sampled
+    tier the others. *)
+
+val place : t -> int
+(** [place t] is how many bytes of its operation pass before the failure
+    {!decide} last answered: [0] if it falls at the operation's start. The part
+    then moves those bytes, and the failure falls at the next operation of the
+    same kind on the same target. *)
+
+val faulted : t -> bool
+(** [faulted t] is [true] iff an operation of the current run met a failure so
+    far: [false] in a run with no failure, in [setup], [inspect] and the
+    restart. A device built over parts tells by it whether an error it gives may
+    come from below. *)
+
+val turn : t -> unit
+(** [turn t] is work that does not wait, such as an operation that returns at
+    once: it takes a turn of the run, 1 us of its clock, without letting other
+    fibers run, so a loop of them still moves the clock and meets the run's
+    limits. The time it takes does not count as time a retry waited. It does
+    nothing outside a run of the program and its restart. *)
+
+val inside : t -> string -> (unit -> 'a) -> 'a
+(** [inside t kind f] is [f ()], an operation of kind [kind] that may wait. A
+    report of a hang names the fibers the program's own fiber waits on, by the
+    operation each waits in and the last one {!decide} was asked about. *)
+
+val hangs : t -> string -> 'a
+(** [hangs t why] stops the run, which fails as a hang: its report says
+    ["the run hangs: "] followed by [why]. A part calls it when it sees the
+    program spin, as on an operation that keeps failing while the clock stands
+    still. Outside a run of the program and its restart, it raises [Failure]
+    with [why]. *)
 
 val changed : t -> int -> unit
 (** [changed t i] records that the operation numbered [i] changed what the part
@@ -204,6 +262,11 @@ module type PART = sig
 
   val pp_op : Op.t Fmt.t
   (** [pp_op] formats one of the part's operations for a trace line. *)
+
+  val indeterminate : exn -> bool
+  (** [indeterminate x] is [true] iff [x] is what a program may raise when an
+      operation of the part fails, other than [Eio.Io], as [End_of_file] when a
+      connection ends. *)
 end
 with type chaos := t
 
@@ -282,15 +345,17 @@ val run :
     its first run, those of every part in one sequence, and what each part
     allows at each. Runs come in two passes:
 
-    - with no power cut: each [once] failure and each [lasting] condition at
-      each operation, and each [alone] failure, then pairs of failures;
+    - with no power cut: each [once] failure at each operation and at each of
+      its {!places}, each [lasting] condition, and each [alone] failure, then
+      pairs of failures, a [mild] one among the seconds;
     - with a power cut, if an operation of the first run may change what a part
       keeps: a cut after each such operation and at the end, each [durable] and
       [alone] failure followed by a cut at the end, then pairs of those, cuts
       during the restart, and the other states a cut may leave.
 
     Each pass has two tiers. The linear tier runs whole, at the operations
-    {!Op.type-structure} picks: the runs of two parts add up, they do not
+    {!Op.type-structure} picks, of the instances {!Op.t.instance} picks, and at
+    the places those operations made: the runs of two parts add up, they do not
     multiply. The sampled tier spends a fortieth of [budget] (defaults to
     [20_000]), or half as much as the linear tier if that is more, on runs drawn
     from [seed] (defaults to [0]): the other operations, and second failures,
@@ -306,16 +371,22 @@ val run :
     - no run hangs or raises an exception other than [Eio.Io], an assertion of
       [app] included. A run hangs when every fiber waits and no timer is due,
       when it still runs after an hour of its clock, when it wakes 10 million
-      times without waiting 1 ms, when it makes 100,000 operations, when one
-      failed operation is retried 10,000 times more than its first run made it
-      while its clock stands still, or when it keeps going for 1000 operations
-      after a power cut;
+      times without waiting 1 ms, when it makes 100,000 operations, those a
+      condition split aside, when one failed operation is retried 10,000 times
+      more than its first run made it while its clock stands still, when a part
+      says it spins ({!hangs}), or when it keeps going for 1000 operations after
+      a power cut. A report of a hang where every fiber waits names those the
+      program's own fiber waits on;
     - after each failure no part reports a promise {!lost}, and [inspect]
       (defaults to doing nothing), called as a fresh process, returns;
     - each restart returns.
 
     An [Eio.Io] that escapes a run with a failure neither passes nor fails it:
-    the restart decides.
+    the restart decides. So does any exception a part of [parts] says a failure
+    of its own may make a program raise ({!PART.indeterminate}), whichever part
+    failed, as a failure of one part may reach a program through another, such
+    as a server that a disk failure stopped and whose clients then read end of
+    file.
 
     The default [Random] state is as it was before, once [run] returns.
 

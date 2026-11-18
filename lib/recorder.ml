@@ -128,14 +128,18 @@ let close t rep rest =
   emit_block t rep.last_block;
   List.iter (append t) rest
 
+(* A block of [p] operations repeated [r] times collapses if that hides two
+   lines at least, as one that hides one saves none. *)
+let worth p r = r >= min_times && (r - 2) * p > 1
+
 (* The block that covers the most operations among the periods [only]
-   keeps, repeated [min_times] or more: its period and instances. *)
+   keeps, worth collapsing: its period and instances. *)
 let best runs ~only =
   let bp = ref 1 and br = ref 1 in
   Array.iteri
     (fun k (r, _) ->
       let p = k + 1 in
-      if only k && r >= min_times && r * p > !bp * !br then begin
+      if only k && worth p r && r * p > !bp * !br then begin
         bp := p;
         br := r
       end)
@@ -145,7 +149,7 @@ let best runs ~only =
 (* The buffer's first lines: the block of [p] operations repeated [r] times,
    or its first operation. *)
 let take t (p, r) =
-  if r >= min_times then begin
+  if worth p r then begin
     let b = Array.sub t.buf 0 (r * p) in
     emit_block t (Array.sub b 0 p);
     emit t
@@ -199,7 +203,7 @@ let rec decide ~at_end t =
            once it covers more than any that ended, it wins. *)
         let q = k + 1 and r = fst runs.(k) in
         let bp, br = best runs ~only:(fun k -> not (ongoing k)) in
-        if t.len >= 2 * max_period && r >= min_times && r * q > bp * br then
+        if t.len >= 2 * max_period && worth q r && r * q > bp * br then
           repeating t q r
   end
 

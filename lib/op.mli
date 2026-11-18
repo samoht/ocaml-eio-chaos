@@ -18,6 +18,7 @@ type t = {
   device : string;
   kind : string;
   target : string;
+  instance : string;
   offset : int;
   length : int;
   detail : string;

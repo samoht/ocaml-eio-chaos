@@ -2,9 +2,10 @@
 
     At each place, the block of up to eight operations repeated three times or
     more that covers the most operations, the shortest on a tie, collapses to
-    its first and last instances, as a retry makes them. Of the lines that
-    leaves, only the first and last hundred and those around the first fault are
-    kept, so a run that spins costs no more than one that does not. *)
+    its first and last instances, as a retry makes them, if that hides two lines
+    or more. Of the lines that leaves, only the first and last hundred and those
+    around the first fault are kept, so a run that spins costs no more than one
+    that does not. *)
 
 type entry = { index : int; op : Op.t; met : (string * string) option }
 (** The type for an operation of a run: its number, and the name and the text of

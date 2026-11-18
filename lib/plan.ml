@@ -1,10 +1,13 @@
 open! Hermetic
 
-type pos = { device : string; kind : string; rank : int }
+type pos = { device : string; kind : string; rank : int; at : int }
 
 let pos_key ~single p =
-  if single then Fmt.str "%s:%d" p.kind p.rank
-  else Fmt.str "%s:%s:%d" p.device p.kind p.rank
+  let k =
+    if single then Fmt.str "%s:%d" p.kind p.rank
+    else Fmt.str "%s:%s:%d" p.device p.kind p.rank
+  in
+  if p.at > 0 then Fmt.str "%s@%d" k p.at else k
 
 (* {1 Traces} *)
 
@@ -15,6 +18,7 @@ type allowed = {
   lasting : named list;
   durable : named list;
   alone : named list;
+  mild : named list;
 }
 
 type faults =
@@ -26,13 +30,21 @@ type faults =
       lasting : 'f list;
       durable : 'f list;
       alone : 'f list;
+      mild : 'f list;
     }
       -> faults
 
-type step = { index : int; op : Op.t; rank : int; faults : faults }
+type step = {
+  index : int;
+  op : Op.t;
+  rank : int;
+  faults : faults;
+  mutable places : (int * int) list;
+}
+
 type trace = step list
 
-let pos s = { device = s.op.device; kind = s.op.kind; rank = s.rank }
+let pos s = { device = s.op.device; kind = s.op.kind; rank = s.rank; at = 0 }
 
 let at (p : pos) (s : step) =
   s.rank = p.rank
@@ -41,7 +53,8 @@ let at (p : pos) (s : step) =
 
 let allowed s =
   match s.faults with
-  | No_faults -> { once = []; lasting = []; durable = []; alone = [] }
+  | No_faults ->
+      { once = []; lasting = []; durable = []; alone = []; mild = [] }
   | Faults f ->
       let named l =
         List.map
@@ -53,6 +66,7 @@ let allowed s =
         lasting = named f.lasting;
         durable = named f.durable;
         alone = named f.alone;
+        mild = named f.mild;
       }
 
 (* The length class of an operation: its length rounded down to a power of
@@ -62,6 +76,56 @@ let length_class n =
   go 0 n
 
 let group (op : Op.t) = (op.device, op.kind, op.target)
+
+(* The rest of a target's name past that of its instance. *)
+let suffix (op : Op.t) =
+  let i = op.instance in
+  if String.starts_with ~prefix:i op.target then
+    String.sub op.target (String.length i)
+      (String.length op.target - String.length i)
+  else op.target
+
+(* Of the instances of each part, in the order the trace met them: the first
+   three, the last, and the first of each shape, the kinds, details and
+   length classes of the operations of each of its targets. *)
+let instances (trace : trace) =
+  let shapes = Hashtbl.create 16 and order = ref [] in
+  List.iter
+    (fun s ->
+      let op = s.op in
+      if op.instance <> "" then begin
+        let k = (op.device, op.instance) in
+        let l =
+          match Hashtbl.find_opt shapes k with
+          | Some l -> l
+          | None ->
+              order := k :: !order;
+              []
+        in
+        Hashtbl.replace shapes k
+          ((op.kind, suffix op, op.detail, length_class op.length) :: l)
+      end)
+    trace;
+  let parts = Hashtbl.create 4 in
+  List.iter
+    (fun ((d, _) as k) ->
+      Hashtbl.replace parts d
+        (k :: Option.value ~default:[] (Hashtbl.find_opt parts d)))
+    !order;
+  let keep = Hashtbl.create 16 in
+  Hashtbl.iter
+    (fun _ ks ->
+      let n = List.length ks and seen = Hashtbl.create 8 in
+      List.iteri
+        (fun j k ->
+          let shape = List.sort_uniq compare (Hashtbl.find shapes k) in
+          let first = not (Hashtbl.mem seen shape) in
+          Hashtbl.replace seen shape ();
+          if j < 3 || j = n - 1 || first then Hashtbl.replace keep k ())
+        ks)
+    parts;
+  fun (op : Op.t) ->
+    op.instance = "" || Hashtbl.mem keep (op.device, op.instance)
 
 (* Of the operations of one kind on one target that thin: the first three,
    the last, and the first of each length class, so a log of many records
@@ -91,9 +155,11 @@ let structural (trace : trace) =
           if i < 3 || i = n - 1 || first then Hashtbl.replace keep s.index ())
         steps)
     per;
-  let last = Hashtbl.create 7 in
+  let last = Hashtbl.create 7 and kept = instances trace in
   List.partition
     (fun s ->
+      kept s.op
+      &&
       match s.op.structure with
       | Every -> true
       | Thin ->
@@ -113,11 +179,34 @@ module Sure = struct
   type t = {
     seen : (string * string * string, int * (int, unit) Hashtbl.t) Hashtbl.t;
     last : (string * string * string, bool) Hashtbl.t;
+    instances : (string * string, bool) Hashtbl.t;
+    counts : (string, int) Hashtbl.t;
   }
 
-  let v () = { seen = Hashtbl.create 7; last = Hashtbl.create 7 }
+  let v () =
+    {
+      seen = Hashtbl.create 7;
+      last = Hashtbl.create 7;
+      instances = Hashtbl.create 7;
+      counts = Hashtbl.create 2;
+    }
+
+  (* One of the first three instances of its part. *)
+  let instance t (op : Op.t) =
+    op.instance = ""
+    ||
+    let k = (op.device, op.instance) in
+    match Hashtbl.find_opt t.instances k with
+    | Some sure -> sure
+    | None ->
+        let n = Option.value ~default:0 (Hashtbl.find_opt t.counts op.device) in
+        Hashtbl.replace t.counts op.device (n + 1);
+        Hashtbl.replace t.instances k (n < 3);
+        n < 3
 
   let add t (op : Op.t) =
+    instance t op
+    &&
     match op.structure with
     | Every -> true
     | Thin ->
@@ -315,6 +404,48 @@ let well_formed k =
           | Some (rest, st) -> state st && String.contains rest '|'
           | None -> false))
 
+let is_number s =
+  s <> ""
+  && String.for_all (function '0' .. '9' -> true | _ -> false) s
+  && (s = "0" || s.[0] <> '0')
+
+let rank_of r =
+  is_number r
+  && match int_of_string_opt r with Some n -> n > 0 | None -> false
+
+(* [kind:rank], after [device:] unless [single], before [@at] if [at] is
+   not [0]: [rank] from [1]. *)
+let pos_of_key ~single p =
+  let p, at =
+    match String.index_opt p '@' with
+    | None -> (p, Some 0)
+    | Some i -> (
+        let at = String.sub p (i + 1) (String.length p - i - 1) in
+        let at = if is_number at then int_of_string_opt at else None in
+        (String.sub p 0 i, match at with Some 0 -> None | at -> at))
+  in
+  match (at, String.split_on_char ':' p) with
+  | Some _, [ kind; rank ] when single -> kind <> "" && rank_of rank
+  | Some _, [ device; kind; rank ] when not single ->
+      device <> "" && kind <> "" && rank_of rank
+  | _ -> false
+
+let fault_of_key ~single f =
+  match String.index_opt f '.' with
+  | Some i ->
+      let name = String.sub f (i + 1) (String.length f - i - 1) in
+      pos_of_key ~single (String.sub f 0 i)
+      && name <> ""
+      && not (String.exists (function '|' | '/' -> true | _ -> false) name)
+  | None -> false
+
+let errors_key ~single k =
+  k = "none"
+  ||
+  match String.starts_with ~prefix:"from:" k with
+  | true -> fault_of_key ~single (String.sub k 5 (String.length k - 5))
+  | false -> List.for_all (fault_of_key ~single) (String.split_on_char '+' k)
+
 let split_state_key k =
   match String.split_on_char '|' k with
   | f :: c :: st :: rest ->
@@ -373,8 +504,18 @@ let cut_text ~single ?at c =
 
 (* {1 Runs with no cut} *)
 
-let fault ?(alone = false) (s : step) (n : named) =
-  { pos = pos s; name = n.name; text = Lazy.force n.text; alone }
+let after_text text = function
+  | 0 -> text
+  | 1 -> text ^ " after 1 byte"
+  | k -> Fmt.str "%s after %d bytes" text k
+
+let fault ?(alone = false) ?(at = 0) (s : step) (n : named) =
+  {
+    pos = { (pos s) with at };
+    name = n.name;
+    text = after_text (Lazy.force n.text) at;
+    alone;
+  }
 
 let single f = { none with faults = [ f ] }
 
@@ -382,6 +523,32 @@ let singles ?alone get steps =
   List.concat_map
     (fun (s : step) -> List.map (fun n -> fault ?alone s n) (get (allowed s)))
     steps
+
+(* The faults of [s] at its places [ks], each after that many bytes. *)
+let placed (s : step) ks =
+  let once = (allowed s).once in
+  List.concat_map (fun at -> List.map (fun n -> fault ~at s n) once) ks
+
+(* The places of [s] a fault may land at in the linear tier, as their source
+   is one of [linear]'s operations, and the others, past its start. The
+   start of an operation the tier tries already is no place of its own. *)
+let places ~linear (s : step) =
+  let lin = List.filter (fun (_, j) -> Hashtbl.mem linear j) s.places in
+  let lin = List.sort_uniq Int.compare (List.map fst lin) in
+  let lin =
+    if Hashtbl.mem linear s.index then List.filter (( <> ) 0) lin else lin
+  in
+  let rest =
+    List.filter
+      (fun k -> k > 0 && not (List.mem k lin))
+      (List.sort_uniq Int.compare (List.map fst s.places))
+  in
+  (lin, rest)
+
+let selected ops =
+  let h = Hashtbl.create 64 in
+  List.iter (fun (s : step) -> Hashtbl.replace h s.index ()) ops;
+  h
 
 let of_steps steps =
   List.map single (singles (fun a -> a.once) steps)
@@ -391,46 +558,78 @@ let of_steps steps =
 
 let linear trace =
   let ops, _ = structural trace in
-  of_steps ops @ List.map single (singles ~alone:true (fun a -> a.alone) ops)
+  let linear = selected ops in
+  List.map single (singles (fun a -> a.once) ops)
+  @ List.concat_map
+      (fun s -> List.map single (placed s (fst (places ~linear s))))
+      trace
+  @ List.map
+      (fun l -> { none with lasting = Some l })
+      (singles (fun a -> a.lasting) ops)
+  @ List.map single (singles ~alone:true (fun a -> a.alone) ops)
+
+(* [n] of the [total] scenarios [at] builds from [ops], [count] of each,
+   drawn as [sample] draws them, each built only once picked. *)
+let spread ~count ~at ~total ops rng n =
+  if total <= n then List.concat_map at ops
+  else
+    let next =
+      Array.init n (fun i ->
+          let lo = i * total / n and hi = (i + 1) * total / n in
+          lo + Random.State.int rng (hi - lo))
+    in
+    let rec go i k acc = function
+      | [] -> List.rev acc
+      | s :: rest ->
+          let m = count s in
+          if i < n && next.(i) < k + m then begin
+            let c = Array.of_list (at s) in
+            let rec take i acc =
+              if i < n && next.(i) < k + m then
+                take (i + 1) (c.(next.(i) - k) :: acc)
+              else (i, acc)
+            in
+            let i, acc = take i acc in
+            go i (k + m) acc rest
+          end
+          else go i (k + m) acc rest
+    in
+    go 0 0 [] ops
+
+(* The scenarios of the sampled tier at one step: its own faults, if it is
+   not in the linear tier, and those at its other places. *)
+type candidates = Start of step | Places of step * int list
 
 (* Sampled as [sample] samples them, but the scenarios are counted first and
    built only once picked. *)
 let others trace =
-  let ops = snd (structural trace) in
-  let at s = of_steps [ s ] in
-  let count (s : step) =
-    match s.faults with
-    | No_faults -> 0
-    | Faults f -> List.length f.once + List.length f.lasting
+  let sel, rest = structural trace in
+  let linear = selected sel in
+  let ops =
+    List.map (fun s -> Start s) rest
+    @ List.filter_map
+        (fun s ->
+          match snd (places ~linear s) with
+          | [] -> None
+          | ks -> Some (Places (s, ks)))
+        trace
+  in
+  let at = function
+    | Start s -> of_steps [ s ]
+    | Places (s, ks) -> List.map single (placed s ks)
+  in
+  let count = function
+    | Start s -> (
+        match s.faults with
+        | No_faults -> 0
+        | Faults f -> List.length f.once + List.length f.lasting)
+    | Places (s, ks) -> (
+        match s.faults with
+        | No_faults -> 0
+        | Faults f -> List.length f.once * List.length ks)
   in
   let total = List.fold_left (fun n s -> n + count s) 0 ops in
-  let pick rng n =
-    if total <= n then List.concat_map at ops
-    else
-      let next =
-        Array.init n (fun i ->
-            let lo = i * total / n and hi = (i + 1) * total / n in
-            lo + Random.State.int rng (hi - lo))
-      in
-      let rec go i k acc = function
-        | [] -> List.rev acc
-        | s :: rest ->
-            let m = count s in
-            if i < n && next.(i) < k + m then begin
-              let c = Array.of_list (at s) in
-              let rec take i acc =
-                if i < n && next.(i) < k + m then
-                  take (i + 1) (c.(next.(i) - k) :: acc)
-                else (i, acc)
-              in
-              let i, acc = take i acc in
-              go i (k + m) acc rest
-            end
-            else go i (k + m) acc rest
-      in
-      go 0 0 [] ops
-  in
-  (total, pick)
+  (total, spread ~count ~at ~total ops)
 
 let is_alone s = List.exists (fun f -> f.alone) s.faults
 
@@ -488,7 +687,15 @@ let seconds ?(limit = max_int) ~rng one ~first ~(after : trace) =
       let pairs steps =
         List.map
           (fun two -> { none with faults = [ one; two ] })
-          (singles (fun a -> a.once) steps)
+          (List.concat_map
+             (fun (s : step) ->
+               singles (fun a -> a.once @ a.mild) [ s ]
+               @ placed s
+                   (List.sort_uniq Int.compare
+                      (List.filter_map
+                         (fun (k, _) -> if k > 0 then Some k else None)
+                         s.places)))
+             steps)
       in
       aim ~rng limit pairs (changed, rest)
 

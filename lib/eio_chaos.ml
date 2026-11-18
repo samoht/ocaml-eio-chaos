@@ -43,7 +43,8 @@ let streak_limit tag first =
 type outcome =
   | Passed
   | Raised of exn
-  | Deadlock
+  | Deadlock of string (* the fibers the program waits on *)
+  | Hung of string (* why a part saw the program spin *)
   | Time_limit
   | Busy
   | Too_long
@@ -56,7 +57,10 @@ type outcome =
   | Lost of exn option * string
   (* what the faulty run raised, and the promise a part lost *)
   | Inspected of exn option * exn
-(* what the faulty run raised, and what inspect raised *)
+  (* what the faulty run raised, and what inspect raised *)
+  | Multiplied of outcome * string * int
+(* a run stopped at a limit, and the condition that split [n] of its
+   operations *)
 
 (* A report a nested check raised is text, its lines set in. *)
 let exn_text = function
@@ -67,7 +71,9 @@ let exn_text = function
 let rec outcome_text ~noun = function
   | Passed -> "none"
   | Raised x -> exn_text x
-  | Deadlock -> "the run hangs: every fiber waits and no timer is due"
+  | Deadlock waits ->
+      "the run hangs: every fiber waits and no timer is due" ^ waits
+  | Hung why -> "the run hangs: " ^ why
   | Time_limit ->
       "the run hangs: it is still running after an hour of its clock"
   | Busy ->
@@ -99,6 +105,9 @@ let rec outcome_text ~noun = function
   | Restart (_, o) -> outcome_text ~noun o
   | Lost (_, s) -> s
   | Inspected (_, x) -> "inspect raised " ^ exn_text x
+  | Multiplied (o, name, n) ->
+      Fmt.str "%s; %s multiplied its operations, %d of them"
+        (outcome_text ~noun o) name n
 
 (* A cut fails the run's switch with it, which cancels every fiber of the
    run. *)
@@ -254,6 +263,10 @@ type keep = Lose_unsynced | Keep_unsynced | Choose of (int -> int)
 (* A part's state, found again by the identity of its type. *)
 type any = Any : 'a Type.Id.t * 'a -> any
 
+(* What a fiber does, for the report of a hang: the kind of operation it
+   waits in, if any, and the last one it made. *)
+type fiber = { mutable inside : string option; mutable last : Plan.step option }
+
 (* What the phases of one scenario share. *)
 type state = {
   pass : pass;
@@ -271,6 +284,7 @@ type state = {
   streak : streak;
   halted : outcome option ref;
   mutable ops : int;
+  mutable splits : int; (* the operations a condition split *)
   mutable restart_ops : int;
   budget : int option;
   mutable floor : int;
@@ -291,6 +305,11 @@ type state = {
   mutable lost : string list; (* latest first *)
   mutable ended : exn option option; (* how a run with a fault ended *)
   mutable recovering : bool; (* the restart after a cut began *)
+  mutable place : int; (* the bytes the last fault decided lands after *)
+  mutable faulted : bool; (* a fault met in the run *)
+  fibers : (int, fiber) Hashtbl.t; (* by trace id *)
+  mutable root : int option; (* the program's own fiber *)
+  mutable charge : unit -> unit;
 }
 
 type t = { st : state option; quiet : bool }
@@ -371,24 +390,42 @@ let pending st step =
       Some f
   | None -> None
 
-(* The fault the scenario puts on [step] of a run with no cut: its lasting
-   condition from its place on, or the next pending one placed there. *)
-let scheduled st (step : Plan.step) ~name ~once ~lasting ~alone =
+(* The fault the scenario puts on [step] of a run with no cut, and the bytes
+   into it where it lands: its lasting condition from its place on, or the
+   next pending one placed there. *)
+let scheduled st (step : Plan.step) ~name ~once ~lasting ~alone ~mild =
   match st.scenario.lasting with
   | Some l ->
       if Plan.at l.pos step then st.on <- true;
       if st.on && String.equal l.pos.device step.op.device then
-        find name lasting l.name
+        Option.map (fun f -> (f, 0)) (find name lasting l.name)
       else None
   | None ->
       Option.bind (pending st step) (fun (f : Plan.fault) ->
-          find name (if f.alone then alone else once) f.name)
+          let l = if f.alone then alone else once @ mild in
+          Option.map (fun x -> (x, f.pos.at)) (find name l f.name))
 
 let pending_cut st step ~name ~durable ~alone =
   Option.bind (pending st step) (fun (f : Plan.fault) ->
       find name (if f.alone then alone else durable) f.name)
 
-let met_text ~name ~pp = Option.map (fun f -> (name f, Fmt.to_to_string pp f))
+let met_text ~name ~pp =
+  Option.map (fun (f, at) ->
+      (name f, Plan.after_text (Fmt.to_to_string pp f) at))
+
+let tid () =
+  (Eio.Private.Fiber_context.tid
+     (Effect.perform Eio.Private.Effects.Get_context)
+    :> int)
+
+let fiber st =
+  let k = tid () in
+  match Hashtbl.find_opt st.fibers k with
+  | Some f -> f
+  | None ->
+      let f = { inside = None; last = None } in
+      Hashtbl.replace st.fibers k f;
+      f
 
 let cut_matches (c : Plan.cut option) step =
   match c with Some { before = Some p; _ } -> Plan.at p step | _ -> false
@@ -415,22 +452,28 @@ let cut_floor st (step : Plan.step) ~durable =
     st.prev;
   st.prev <- Some (step, Plan.Sure.add st.sure step.op, durable)
 
-let decide_running st t (op : Op.t) ~name ~pp ~lasting ~durable ~alone once =
-  st.ops <- st.ops + 1;
-  count_op st st.ops;
+let decide_running st t (op : Op.t) ~name ~pp ~lasting ~durable ~alone ~mild
+    ~split once =
+  if split then st.splits <- st.splits + 1
+  else begin
+    st.ops <- st.ops + 1;
+    count_op st st.ops
+  end;
   let r = st.trace in
   let index, rank = number r op in
   st.index <- index;
+  st.place <- 0;
   let q l = if t.quiet then [] else l in
   let once = q once and lasting = q lasting and durable = q durable in
-  let alone = q alone in
+  let alone = q alone and mild = q mild in
   let faults : Plan.faults =
-    match (once, lasting, durable, alone) with
-    | [], [], [], [] -> No_faults
-    | _ -> Faults { name; pp; once; lasting; durable; alone }
+    match (once, lasting, durable, alone, mild) with
+    | [], [], [], [], [] -> No_faults
+    | _ -> Faults { name; pp; once; lasting; durable; alone; mild }
   in
   let op = shared st op in
-  let step = { Plan.index; op; rank; faults } in
+  let step = { Plan.index; op; rank; faults; places = [] } in
+  (fiber st).last <- Some step;
   match st.pass with
   | Errors -> (
       if Option.is_some st.budget then begin
@@ -440,12 +483,14 @@ let decide_running st t (op : Op.t) ~name ~pp ~lasting ~durable ~alone once =
              List.length once + List.length lasting + List.length alone
            else 0)
       end;
-      let fault = scheduled st step ~name ~once ~lasting ~alone in
+      let fault = scheduled st step ~name ~once ~lasting ~alone ~mild in
       note r step (met_text ~name ~pp fault);
       match fault with
-      | Some _ ->
+      | Some (f, at) ->
+          st.place <- at;
+          st.faulted <- true;
           failed st op;
-          fault
+          Some f
       | None ->
           met_no_fault st op;
           None)
@@ -460,7 +505,8 @@ let decide_running st t (op : Op.t) ~name ~pp ~lasting ~durable ~alone once =
       end;
       if st.cut then cancelled st;
       let fault = pending_cut st step ~name ~durable ~alone in
-      note r step (met_text ~name ~pp fault);
+      note r step (met_text ~name ~pp (Option.map (fun f -> (f, 0)) fault));
+      if Option.is_some fault then st.faulted <- true;
       fault
 
 let decide_restarting st (op : Op.t) =
@@ -468,6 +514,8 @@ let decide_restarting st (op : Op.t) =
   | Errors ->
       st.restart_ops <- st.restart_ops + 1;
       count_op st st.restart_ops;
+      (fiber st).last <-
+        Some { Plan.index = 0; op; rank = 0; faults = No_faults; places = [] };
       None
   | Cuts ->
       st.ops <- st.ops + 1;
@@ -475,7 +523,8 @@ let decide_restarting st (op : Op.t) =
       let r = st.rtrace in
       let index, rank = number r op in
       st.index <- index;
-      let step = { Plan.index; op; rank; faults = No_faults } in
+      let step = { Plan.index; op; rank; faults = No_faults; places = [] } in
+      (fiber st).last <- Some step;
       if (not st.cut) && cut_matches st.scenario.rcut step then begin
         ignore (st.cut_parts () : (string * string) list);
         st.cut <- true;
@@ -486,17 +535,61 @@ let decide_restarting st (op : Op.t) =
       None
 
 let decide t op ~name ?(pp = fun ppf f -> Fmt.string ppf (name f))
-    ?(lasting = []) ?(durable = []) ?(alone = []) once =
+    ?(lasting = []) ?(durable = []) ?(alone = []) ?(mild = []) ?(split = false)
+    once =
   match t.st with
   | None -> None
   | Some st -> (
       match st.phase with
       | Setup | Inspecting | Again | Ended -> None
       | Running ->
-          decide_running st t op ~name ~pp ~lasting ~durable ~alone once
+          decide_running st t op ~name ~pp ~lasting ~durable ~alone ~mild ~split
+            once
       | Restarting -> decide_restarting st op)
 
 let index t = match t.st with Some st -> st.index | None -> 0
+
+let place t =
+  match t.st with Some { phase = Running; place; _ } -> place | _ -> 0
+
+let places t i l =
+  let add (r : record) =
+    let rec go = function
+      | (s : Plan.step) :: rest ->
+          if s.index = i then s.places <- l @ s.places
+          else if s.index > i then go rest
+      | [] -> ()
+    in
+    go r.kept
+  in
+  match t.st with
+  | Some ({ phase = Running; _ } as st) when l <> [] -> add st.trace
+  | Some _ | None -> ()
+
+let faulted t =
+  match t.st with Some { phase = Running; faulted; _ } -> faulted | _ -> false
+
+let turn t =
+  match t.st with
+  | Some ({ phase = Running | Restarting | Again; _ } as st) ->
+      st.charge ();
+      st.taken <- st.taken + 1000
+  | Some _ | None -> ()
+
+let inside t kind f =
+  match t.st with
+  | Some ({ phase = Running | Restarting | Again; _ } as st) ->
+      let fb = fiber st in
+      let before = fb.inside in
+      fb.inside <- Some kind;
+      Fun.protect ~finally:(fun () -> fb.inside <- before) f
+  | Some _ | None -> f ()
+
+let hangs t why =
+  match t.st with
+  | Some ({ phase = Running | Restarting | Again; _ } as st) ->
+      halt st (Hung why)
+  | Some _ | None -> failwith why
 
 let changed t i =
   match t.st with
@@ -550,6 +643,7 @@ module type PART = sig
   val cut : t -> (string * string) list
   val restart : t -> power:bool -> cut:keep option -> capability
   val pp_op : Op.t Fmt.t
+  val indeterminate : exn -> bool
 end
 with type chaos := t
 
@@ -671,24 +765,27 @@ type config = {
   noun : string;
 }
 
-(* A faulty run may end with [Eio.Io], from one fiber or several. *)
-let rec is_io = function
+(* A faulty run may end with [Eio.Io], or with what a failure of one of its
+   parts makes a program raise, from one fiber or several. *)
+let rec is_io parts = function
   | Eio.Io _ -> true
-  | Eio.Exn.Multiple l -> l <> [] && List.for_all (fun (x, _) -> is_io x) l
-  | _ -> false
+  | Eio.Exn.Multiple l ->
+      l <> [] && List.for_all (fun (x, _) -> is_io parts x) l
+  | x ->
+      List.exists (fun (Part { m = (module P); _ }) -> P.indeterminate x) parts
 
-(* A run ends once [halted] holds why. *)
-let in_loop ?idle ~halted main =
+(* A run ends once [halted] holds why. A hang says which fibers wait, as
+   [waits] tells of their trace ids. *)
+let in_loop ?idle ?(waits = fun _ -> "") ~halted main =
   match
     Quiet_mock.run ?idle
       ~effects:{ handle = Systhread.handle }
       ~stop:(fun () -> Option.is_some !halted)
-      ~limit:3600.
-      (fun clock mono _charge -> main clock mono)
+      ~limit:3600. main
   with
   | v -> Ok v
   | exception Quiet_mock.Stopped -> Error (Option.get !halted)
-  | exception Quiet_mock.Deadlock_detected _ -> Error Deadlock
+  | exception Quiet_mock.Deadlock_detected tids -> Error (Deadlock (waits tids))
   | exception Quiet_mock.Time_limit -> Error Time_limit
   | exception Quiet_mock.Busy -> Error Busy
   | exception Quiet_mock.Too_long -> Error Too_long
@@ -801,6 +898,12 @@ let scenario_state cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
     lost = [];
     ended = None;
     recovering = false;
+    splits = 0;
+    place = 0;
+    faulted = false;
+    fibers = Hashtbl.create 8;
+    root = None;
+    charge = ignore;
   }
 
 (* What the phases of one scenario's loop share. *)
@@ -841,7 +944,7 @@ let run_errors c caps =
   match run_app c caps with
   | () when faulty -> restart_errors c None
   | () -> Passed
-  | exception x when faulty && is_io x -> restart_errors c (Some x)
+  | exception x when faulty && is_io c.cfg.parts x -> restart_errors c (Some x)
   | exception x -> Raised x
 
 (* What a cut left: a promise a part lost, or what [inspect] says of it. *)
@@ -899,12 +1002,14 @@ let run_cuts c caps =
   end;
   match if st.kept_run then Kept_going else o with
   | Passed -> recover c
-  | Raised x when st.scenario.faults <> [] && is_io x -> recover c
+  | Raised x when st.scenario.faults <> [] && is_io c.cfg.parts x -> recover c
   | o -> Some (Program o)
 
 (* The program's run in its loop, after [setup] on new parts. *)
-let in_scenario cfg (st : state) ~trail ~rtrail out clock mono =
+let in_scenario cfg (st : state) ~trail ~rtrail out clock mono charge =
   st.mono <- Some mono;
+  st.charge <- charge;
+  st.root <- Some (tid ());
   Eio.Fiber.with_binding Eio.Private.Debug.v#traceln (Stdenv.traceln out)
   @@ fun () ->
   Eio.Switch.run @@ fun sw ->
@@ -949,13 +1054,86 @@ let verdict st = function
 (* A run with no cut fails as its loop halted, as a livelock, or as its
    restart failed. *)
 let errors_outcome st outcome =
+  let multiplied o =
+    match (o, st.scenario.lasting) with
+    | (Busy | Too_long | Too_many), Some l when st.splits > 0 ->
+        Multiplied (o, l.name, st.splits)
+    | _ -> o
+  in
   let restarted o =
+    let o = multiplied o in
     match st.ended with Some e when o <> Passed -> Restart (e, o) | _ -> o
   in
   match (!(st.halted), st.streak.hit) with
   | Some o, _ -> restarted o
   | None, Some (t, p, n) -> Livelock (t, p, n)
   | None, None -> restarted outcome
+
+let pp_op cfg ppf (op : Op.t) =
+  let pp =
+    List.find_map
+      (fun (Part { m = (module P); _ }) ->
+        if String.equal P.name op.device then Some P.pp_op else None)
+      cfg.parts
+    |> Option.value ~default:Op.pp
+  in
+  if cfg.single then pp ppf op else Fmt.pf ppf "%s %a" op.device pp op
+
+let pp_step cfg ppf (e : Recorder.entry) =
+  Fmt.pf ppf "#%d %a" e.index (pp_op cfg) e.op
+
+let step_text cfg (s : Plan.step) =
+  Fmt.to_to_string (pp_step cfg)
+    { Recorder.index = s.index; op = s.op; met = None }
+
+(* What a hang adds when the program's own fiber waits in no operation on
+   other fibers that still run, as a switch whose body returned waits on the
+   fibers it forked: those fibers, by what they do. *)
+let waits cfg st tids =
+  let tids = List.map (fun (t : Eio.Private.Trace.id) -> (t :> int)) tids in
+  let is_root t = st.root = Some t in
+  let others = List.filter (fun t -> not (is_root t)) tids in
+  let busy t =
+    match Hashtbl.find_opt st.fibers t with
+    | Some { inside = Some _; _ } -> true
+    | _ -> false
+  in
+  let named = 5 in
+  match others with
+  | [] -> ""
+  | _ when not (List.exists is_root tids) -> ""
+  | _ when busy (Option.get st.root) -> ""
+  | _ ->
+      let article k =
+        match k.[0] with
+        | 'a' | 'e' | 'i' | 'o' | 'u' -> "an " ^ k
+        | _ | (exception Invalid_argument _) -> "a " ^ k
+      in
+      (* The restart after a fault numbers no operation. *)
+      let last (s : Plan.step) =
+        if s.index = 0 then Fmt.to_to_string (pp_op cfg) s.op
+        else step_text cfg s
+      in
+      let fiber t =
+        match Hashtbl.find_opt st.fibers t with
+        | Some { inside = Some k; last = Some s } ->
+            Fmt.str "a fiber in %s, last %s" (article k) (last s)
+        | Some { inside = Some k; last = None } ->
+            Fmt.str "a fiber in %s" (article k)
+        | Some { inside = None; last = Some s } ->
+            Fmt.str "a fiber in no %s, last %s" cfg.noun (last s)
+        | Some { inside = None; last = None } | None ->
+            Fmt.str "a fiber that made no %s" cfg.noun
+      in
+      let n = List.length others in
+      Fmt.str
+        ". The program's own fiber waits on %d fiber%s still running, as a \
+         switch does once its body returned: %s%s"
+        n
+        (if n = 1 then "" else "s")
+        (String.concat "; "
+           (List.map fiber (List.filteri (fun i _ -> i < named) others)))
+        (if n > named then Fmt.str "; and %d more" (n - named) else "")
 
 let exec cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
   let st = scenario_state cfg ~pass ?cap ?budget ?against ~first s in
@@ -969,7 +1147,8 @@ let exec cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
     | None -> false
   in
   let result =
-    in_loop ~idle ~halted:st.halted (in_scenario cfg st ~trail ~rtrail out)
+    in_loop ~idle ~waits:(waits cfg st) ~halted:st.halted
+      (in_scenario cfg st ~trail ~rtrail out)
   in
   st.phase <- Ended;
   let outcome, error = verdict st result in
@@ -994,21 +1173,6 @@ let exec cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
 (* {1 Reports} *)
 
 let fail cfg fmt = Fmt.kstr (fun s -> failwith (cfg.name ^ ": " ^ s)) fmt
-
-let pp_step cfg ppf (e : Recorder.entry) =
-  let pp_op =
-    List.find_map
-      (fun (Part { m = (module P); _ }) ->
-        if String.equal P.name e.op.device then Some P.pp_op else None)
-      cfg.parts
-    |> Option.value ~default:Op.pp
-  in
-  if cfg.single then Fmt.pf ppf "#%d %a" e.index pp_op e.op
-  else Fmt.pf ppf "#%d %s %a" e.index e.op.device pp_op e.op
-
-let step_text cfg (s : Plan.step) =
-  Fmt.to_to_string (pp_step cfg)
-    { Recorder.index = s.index; op = s.op; met = None }
 
 (* What the program printed, a line of a report, its lines set in. *)
 let output out =
@@ -1041,8 +1205,10 @@ let report cfg ~title ~hash ~key ~matched ~diverged ~(trace : record) ~out
   let pp_lines ppf t =
     match t.lines with Some l -> Recorder.pp (pp_step cfg) ppf l | None -> ()
   in
-  Fmt.failwith "%s: %s@\n%a  trace:@\n%a  replay:   %s ~replay:%S %s" cfg.name
-    title
+  let pp_lines ppf (t : record) =
+    if t.last > 0 then Fmt.pf ppf "  trace:@\n%a" pp_lines t
+  in
+  Fmt.failwith "%s: %s@\n%a%a  replay:   %s ~replay:%S %s" cfg.name title
     Fmt.(list ~sep:nop line)
     lines pp_lines trace cfg.name
     (replay_string cfg hash key)
@@ -1065,9 +1231,12 @@ let refuse_first cfg ~(trace : record) ~out o ~budget ~what =
   let pp_lines ppf t =
     match t.lines with Some l -> Recorder.pp (pp_step cfg) ppf l | None -> ()
   in
+  let pp_lines ppf (t : record) =
+    if t.last > 0 then Fmt.pf ppf "  trace:@\n%a" pp_lines t
+  in
   Fmt.kstr
     (fun report -> failwith (String.trim report))
-    "%a@\n%a  trace:@\n%a" head o line (output out) pp_lines trace
+    "%a@\n%a%a" head o line (output out) pp_lines trace
 
 let no_longer cfg ~hash (h, k) =
   if h = hash then
@@ -1652,10 +1821,15 @@ let check_parts name parts =
   in
   dup (List.map part_name parts)
 
-(* [NAMES/HASH/KEY], [NAMES] the names of the parts joined by [+]. *)
-let parse_replay ~name ~names ~passes r =
+(* [NAMES/HASH/KEY], [NAMES] the names of the parts joined by [+] and
+   [HASH] eight hexadecimal digits, in either case. *)
+let parse_replay ~name ~names ~single ~passes r =
   let bad () =
     Fmt.invalid_arg "%s: replay is %S, not a replay string of this check" name r
+  in
+  let hex = function
+    | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
+    | _ -> false
   in
   let prefix = names ^ "/" in
   if not (String.starts_with ~prefix r) then bad ()
@@ -1663,10 +1837,13 @@ let parse_replay ~name ~names ~passes r =
     let n = String.length prefix in
     let r' = String.sub r n (String.length r - n) in
     match String.index_opt r' '/' with
-    | Some i when i > 0 && i < String.length r' - 1 ->
-        let key = String.sub r' (i + 1) (String.length r' - i - 1) in
-        if passes = [ Cuts ] && not (Plan.well_formed key) then bad ()
-        else (String.sub r' 0 i, key)
+    | Some 8 when String.length r' > 9 && String.for_all hex (String.sub r' 0 8)
+      ->
+        let key = String.sub r' 9 (String.length r' - 9) in
+        let cut = Plan.well_formed key in
+        if passes = [ Cuts ] && not cut then bad ()
+        else if (not cut) && not (Plan.errors_key ~single key) then bad ()
+        else (String.lowercase_ascii (String.sub r' 0 8), key)
     | _ -> bad ()
 
 let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
@@ -1684,12 +1861,12 @@ let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
   check_parts name parts;
   reporting name;
   let names = String.concat "+" (List.map part_name parts) in
-  let replay = Option.map (parse_replay ~name ~names ~passes) replay in
   let single, noun =
     match parts with
     | [ Part { m = (module P); _ } ] -> (true, P.noun)
     | _ -> (false, "operation")
   in
+  let replay = Option.map (parse_replay ~name ~names ~single ~passes) replay in
   let cfg =
     { name; args; os; seed; setup; inspect; app; parts; single; noun }
   in
@@ -1728,7 +1905,7 @@ module Private = struct
     in
     let halted = ref None in
     match
-      in_loop ~halted @@ fun clock mono ->
+      in_loop ~halted @@ fun clock mono _ ->
       let out = Output.v () in
       Eio.Fiber.with_binding Eio.Private.Debug.v#traceln (Stdenv.traceln out)
       @@ fun () ->
