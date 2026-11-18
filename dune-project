@@ -32,7 +32,7 @@ with a line that replays it.")
   fmt
   (console (>= 0.9.0))
   (cstruct (>= 6.2.0))
-  mtime
+  (mtime (>= 2.0.0))
   psq
   domain-local-await
   (mdx (and :with-test (>= 2.3.0)))

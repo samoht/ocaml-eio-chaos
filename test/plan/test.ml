@@ -67,7 +67,7 @@ let test_interleave_prefix () =
     first
 
 let () =
-  Alcotest.run "eio-chaos plan"
+  Alcotest.run "eio-chaos.plan"
     [
       ( "sample",
         [

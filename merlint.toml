@@ -1,5 +1,4 @@
-# A copy of Eio_mock's scheduler, kept as close to it as the changes allow,
-# as eio-net's copy is.
+# A copy of Eio_mock's scheduler, kept as close to it as the changes allow.
 [[rules]]
 files = ["lib/quiet_mock.ml"]
 exclude = ["E005"]

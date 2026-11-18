@@ -124,7 +124,7 @@ val run :
       report says where they differed;
     - no run hangs or raises an exception other than [Eio.Io], an assertion of
       [app] included. A run hangs when every fiber waits and no timer is due,
-      when it still runs after an hour of its clock, when it wakes 10 million
+      when it still runs after an hour of its clock, when it wakes 10,000,000
       times without waiting 1 ms, when it makes 100,000 operations, those a
       condition split aside, when one failed operation is retried 10,000 times
       more than its first run made it while its clock stands still, when a part
