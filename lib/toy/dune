@@ -1,4 +1,3 @@
 (library
  (name eio_chaos_toy)
- (public_name eio-chaos.toy)
  (libraries hermetic eio eio-chaos fmt mtime))

@@ -21,7 +21,7 @@
   "eio-chaos runs an Eio program many times on simulated devices, each
 time with a fault the real kernel can produce or a power cut, and restarts it
 on what the fault left. The devices are parts that other packages provide,
-such as a disk or a network; eio-chaos.toy is a toy one, to read as an
+such as a disk or a network; its README builds a toy one, to read as an
 example. Eio_chaos.run builds the program's env from them, with simulated
 clocks, seeded entropy and captured output, and reports the first failing run
 with a line that replays it.")

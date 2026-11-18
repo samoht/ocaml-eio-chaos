@@ -1,6 +1,6 @@
 (executable
  (name fail)
- (libraries eio-chaos eio-chaos.toy eio console.tty))
+ (libraries eio-chaos eio_chaos_toy eio console.tty))
 
 (cram
  (deps fail.exe))

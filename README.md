@@ -13,9 +13,10 @@ The parts come from other packages:
 [eio-fs](https://github.com/samoht/ocaml-eio-fs) gives a disk,
 `Eio_fs_chaos.disk ()`, and
 [eio-net](https://github.com/samoht/ocaml-eio-net) a network,
-`Eio_net_chaos.network ()`. This package has a toy one,
+`Eio_net_chaos.network ()`. This README uses a toy one,
 `Eio_chaos_toy.resolver ()`, to try the check and to read as an example of
-a part.
+a part. It is not installed: [Writing a part](#writing-a-part) shows its
+whole source.
 
 ## Installation
 
