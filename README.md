@@ -9,9 +9,11 @@ parts, runs the program on it many times, and in each run makes a part fail
 or cuts the power. After each failure it restarts the program on what the
 failure left.
 
-The parts come from other packages. [eio-fs](https://github.com/samoht/ocaml-eio-fs)
-gives a disk, `Eio_fs_chaos.disk ()`; a network from
-[eio-net](https://github.com/samoht/ocaml-eio-net) is to follow.
+The parts come from other packages:
+[eio-fs](https://github.com/samoht/ocaml-eio-fs) gives a disk,
+`Eio_fs_chaos.disk ()`, and
+[eio-net](https://github.com/samoht/ocaml-eio-net) a network,
+`Eio_net_chaos.network ()`.
 
 ## Installation
 
@@ -40,12 +42,33 @@ val start : < fs : [> Eio.Fs.dir_ty ] Eio.Path.t; .. > -> unit = <fun>
 
 With the disk of eio-fs, `Eio_chaos.run [ Eio_fs_chaos.disk () ] start`
 checks it; `Eio_fs_chaos.run start` is the same check, its reports named
-after it.
+after it. A program that also talks to a peer takes both parts, and each
+run fails one of them, or both in a pair:
+
+<!-- $MDX skip -->
+```ocaml
+let main env =
+  Eio.Path.save ~create:(`Or_truncate 0o644) Eio.Path.(env#fs / "log") "up";
+  Eio.Switch.run @@ fun sw ->
+  let addr = `Tcp (Eio.Net.Ipaddr.V4.loopback, 8080) in
+  let l = Eio.Net.listen ~reuse_addr:true ~backlog:1 ~sw env#net addr in
+  Eio.Fiber.fork_daemon ~sw (fun () ->
+      Eio.Net.run_server l ~on_error:ignore (fun flow _ ->
+          Eio.Flow.copy_string "hello" flow));
+  match Eio.Flow.read_all (Eio.Net.connect ~sw env#net addr) with
+  | _ | (exception Eio.Io _) -> ()
+
+let () =
+  Eio_chaos.run [ Eio_fs_chaos.disk (); Eio_net_chaos.network () ] main
+```
 
 The first run has no failure. Each later run starts from the same state and
 meets the failures that a part allows at an operation of the program:
 
-- one operation fails, as a write with `ENOSPC`, or two in one run;
+- one operation fails, as a write with `ENOSPC`, or two in one run, on one
+  part or across two;
+- a read or a write fails part of the way through, as a connection reset
+  after the bytes of the first of two messages;
 - a condition holds from one operation on, as a disk that is full;
 - the power is cut after an operation that changes what a part keeps, or at
   the end, and each part keeps what a cut may leave: the disk keeps what was
@@ -84,7 +107,9 @@ alone. To simulate a part without making it fail, wrap it in
 
 Each part proposes, at each operation, the failures the kernel allows there,
 and says which of its operations matter most: a disk thins the many reads
-and writes of one file, and its syncs follow the writes they cover. The
+and writes of one file, and its syncs follow the writes they cover; a
+network thins its many connections alike, and the reads and writes of each,
+and places a failure inside a read where a write of the peer ended. The
 runner chooses among them, in two tiers:
 
 1. The linear tier runs whole: each failure at each operation the part keeps
@@ -154,8 +179,8 @@ In production it passes `Eio_chaos.none`, which never fails anything:
 # let read chaos key =
     let op =
       { Eio_chaos.Op.device = "cache"; kind = "read"; target = key;
-        offset = 0; length = 0; detail = ""; structure = Every;
-        changes = Never }
+        instance = ""; offset = 0; length = 0; detail = "";
+        structure = Every; changes = Never }
     in
     match Eio_chaos.decide chaos op ~name:(fun `Stale -> "stale") [ `Stale ] with
     | Some `Stale -> "old"
@@ -171,7 +196,17 @@ given to `Eio_chaos.Part`. `start` makes it new for a run, `run` gives the
 program its capability on what `setup` left, `cut` cuts its power, and
 `restart ~power` gives the capability for the program started again, with
 what survives a restart or a power cut. From `restart`, a part calls
-`Eio_chaos.lost` for each promise it broke.
+`Eio_chaos.lost` for each promise it broke, and `indeterminate` says what a
+program raises when an operation of the part fails, as `End_of_file` on a
+stream.
+
+A part that moves bytes gives the places inside an operation where a failure
+may land with `Eio_chaos.places`, and acts out one that lands there, after
+the bytes `Eio_chaos.place` says. Its operations name an `instance`, such
+as the connection of an end, so many alike cost runs by their kinds. A
+condition of the whole run, such as an outage, it proposes at its first
+operation and acts out from the start of the run, which `run ~faults`
+names.
 
 ## Limitations
 

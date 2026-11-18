@@ -15,3 +15,9 @@ exclude = ["E105"]
 [[rules]]
 files = ["test/quiet_mock/*"]
 exclude = ["E606"]
+
+# The example of a program on the disk of eio-fs and the network of eio-net:
+# both packages depend on this one.
+[[rules]]
+files = ["README.md"]
+exclude = ["E923"]
