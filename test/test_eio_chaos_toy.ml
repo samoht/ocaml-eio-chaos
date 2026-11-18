@@ -7,7 +7,9 @@ let resolves () =
     [ Eio_chaos_toy.resolver () ]
     (fun env ->
       match lookup env with
-      | [ `Tcp (ip, 80) ] when ip = Eio.Net.Ipaddr.V4.loopback -> ()
+      | [ `Tcp (ip, 80) ]
+        when String.equal (Fmt.str "%a" Eio.Net.Ipaddr.pp ip) "127.0.0.1" ->
+          ()
       | _ -> failwith "not the loopback address"
       | exception Eio.Io _ -> ())
 
@@ -62,7 +64,7 @@ let other_operations () =
         Alcotest.failf "not refused: %s" r
 
 let suite =
-  ( "toy",
+  ( "eio_chaos_toy",
     [
       Alcotest.test_case "a name resolves to the loopback address" `Quick
         (Expect.passes resolves);

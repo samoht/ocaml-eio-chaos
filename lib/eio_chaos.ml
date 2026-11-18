@@ -1919,9 +1919,13 @@ let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
       if cuts && Plan.well_formed k then check_cuts cfg ~budget ~replay:(Some r)
       else ignore (check_errors cfg ~budget ~replay:(Some r) : bool)
 
-let run ?os ?budget ?seed ?replay ?setup ?inspect parts app =
-  run_named ~name:"Eio_chaos.run" ~args:"parts app" ?os ?budget ?seed ?replay
-    ?setup ?inspect parts app
+let run ?name ?os ?budget ?seed ?replay ?setup ?inspect parts app =
+  let name, args =
+    match name with
+    | None -> ("Eio_chaos.run", "parts app")
+    | Some n -> (n, "app")
+  in
+  run_named ~name ~args ?os ?budget ?seed ?replay ?setup ?inspect parts app
 
 module Private = struct
   type nonrec pass = pass = Errors | Cuts
