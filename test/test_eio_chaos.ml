@@ -256,6 +256,24 @@ let replay () =
     "the replay fails the same way" r
     (Expect.report (restart_fails ~replay:key))
 
+(* A shortcut of another package names its reports and its replay line. *)
+let named () =
+  let check ?replay () =
+    Eio_chaos.run ~name:"Toy.run" ?replay [ Disk.part (Disk.v ()) ] two_writes
+  in
+  let r = Expect.report check in
+  if not (String.starts_with ~prefix:"Toy.run: the restart failed" r) then
+    Alcotest.failf "not named: %s" r;
+  let line = Expect.field "replay" r in
+  if
+    not
+      (String.starts_with ~prefix:"Toy.run ~replay:" line
+      && String.ends_with ~suffix:"\" app" line)
+  then Alcotest.failf "not the shortcut's replay: %s" r;
+  Alcotest.(check string)
+    "the replay fails the same way" r
+    (Expect.report (check ~replay:(Expect.replay r)))
+
 let refused_replay f =
   match f () with
   | () -> Alcotest.fail "the replay ran"
@@ -636,6 +654,7 @@ let suite =
       Alcotest.test_case "a hang fails" `Quick hang;
       Alcotest.test_case "a replay fails the same way" `Quick replay;
       Alcotest.test_case "a replay under macOS" `Quick replay_macos;
+      Alcotest.test_case "a shortcut names its reports" `Quick named;
       Alcotest.test_case "two parts, and a pair across them" `Quick two_parts;
       Alcotest.test_case "a cut's lines name their part" `Quick cut_labelled;
       Alcotest.test_case "two parts with one name" `Quick same_name;
