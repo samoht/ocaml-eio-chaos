@@ -909,9 +909,13 @@ let scenario_state cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
 (* What the phases of one scenario's loop share. *)
 type ctx = { cfg : config; st : state; w : world; rkeep : keep option }
 
+(* What each part says of a cut, labelled with its name once a run has two
+   parts. *)
 let cut_parts cfg () =
   List.concat_map
-    (fun (Part { m = (module P); state; _ }) -> P.cut state)
+    (fun (Part { m = (module P); state; _ }) ->
+      let l = P.cut state in
+      if cfg.single then l else List.map (fun (k, v) -> (P.name ^ " " ^ k, v)) l)
     cfg.parts
 
 let restart_parts cfg ~power ~cut =
@@ -1179,11 +1183,29 @@ let output out =
   let s = String.trim (Output.printed out) in
   ("output", String.concat "\n            " (String.split_on_char '\n' s))
 
-let line ppf (k, v) = if v <> "" then Fmt.pf ppf "  %-9s %s@\n" (k ^ ":") v
+(* The width of a report's names: that of the longest one shown. *)
+let width lines =
+  List.fold_left
+    (fun w (k, v) -> if v = "" then w else max w (String.length k + 1))
+    9 lines
 
+let line w ppf (k, v) = if v <> "" then Fmt.pf ppf "  %-*s %s@\n" w (k ^ ":") v
+
+(* [NAMES/HASH/KEY], with [/macos] after [NAMES] for a check under macOS. *)
 let replay_string cfg hash key =
   let names = String.concat "+" (List.map part_name cfg.parts) in
-  Fmt.str "%s/%s/%s" names hash key
+  let os = match cfg.os with `Linux -> "" | `Macos -> "/macos" in
+  Fmt.str "%s%s/%s/%s" names os hash key
+
+let os_arg = function `Linux -> "" | `Macos -> " ~os:`Macos"
+
+(* The trace of a run, if it has an operation to show. *)
+let pp_trace cfg ppf (t : record) =
+  match t.lines with
+  | Some l ->
+      let s = Fmt.str "%a" (Recorder.pp (pp_step cfg)) l in
+      if s <> "" then Fmt.pf ppf "  trace:@\n%s" s
+  | None -> ()
 
 (* The report of a failing run: the scenario's lines, the trace, and the
    replay that runs it alone. *)
@@ -1202,15 +1224,10 @@ let report cfg ~title ~hash ~key ~matched ~diverged ~(trace : record) ~out
     @ Option.fold ~none:[] ~some:(fun d -> [ ("diverged", d) ]) diverged
     @ [ ("error", error); output out ]
   in
-  let pp_lines ppf t =
-    match t.lines with Some l -> Recorder.pp (pp_step cfg) ppf l | None -> ()
-  in
-  let pp_lines ppf (t : record) =
-    if t.last > 0 then Fmt.pf ppf "  trace:@\n%a" pp_lines t
-  in
-  Fmt.failwith "%s: %s@\n%a%a  replay:   %s ~replay:%S %s" cfg.name title
-    Fmt.(list ~sep:nop line)
-    lines pp_lines trace cfg.name
+  let w = width lines in
+  Fmt.failwith "%s: %s@\n%a%a  %-*s %s%s ~replay:%S %s" cfg.name title
+    Fmt.(list ~sep:nop (line w))
+    lines (pp_trace cfg) trace w "replay:" cfg.name (os_arg cfg.os)
     (replay_string cfg hash key)
     cfg.args
 
@@ -1228,15 +1245,9 @@ let refuse_first cfg ~(trace : record) ~out o ~budget ~what =
         Fmt.pf ppf "%s: the run with no %s failed: %s" cfg.name what
           (outcome_text ~noun:cfg.noun o)
   in
-  let pp_lines ppf t =
-    match t.lines with Some l -> Recorder.pp (pp_step cfg) ppf l | None -> ()
-  in
-  let pp_lines ppf (t : record) =
-    if t.last > 0 then Fmt.pf ppf "  trace:@\n%a" pp_lines t
-  in
   Fmt.kstr
     (fun report -> failwith (String.trim report))
-    "%a@\n%a%a" head o line (output out) pp_lines trace
+    "%a@\n%a%a" head o (line 9) (output out) (pp_trace cfg) trace
 
 let no_longer cfg ~hash (h, k) =
   if h = hash then
@@ -1282,6 +1293,21 @@ let at cfg r p = Option.map (step_text cfg) (found r p)
 
 (* {1 Runs with no cut} *)
 
+(* How a restart failed, for a report's title: it raised, or it hung. *)
+let restart_title ~left o =
+  let how =
+    match o with
+    | Raised x -> (
+        match exn_text x with
+        | t when String.contains t '\n' -> "raised an exception"
+        | t -> "raised " ^ t)
+    | _ -> "hung"
+  in
+  Fmt.str
+    "the restart failed: the program, run again with no fault on what %s left, \
+     %s"
+    left how
+
 (* The report of a scenario whose run failed, or whose restart did. *)
 let failed_check cfg ~hash ~matched ~diverged ~(run : run) ~out
     (s : Plan.scenario) =
@@ -1303,9 +1329,7 @@ let failed_check cfg ~hash ~matched ~diverged ~(run : run) ~out
   match run.outcome with
   | Restart (e, o) ->
       report
-        ~title:
-          "the restart failed: the program, run again with no fault on what \
-           the faulty run left, did not return"
+        ~title:(restart_title ~left:"the faulty run" o)
         ~error:(text o)
         [ faults; ended e ]
   | Lost (e, l) ->
@@ -1497,13 +1521,9 @@ let error_text cfg = function
   | Settle (Lost (_, s)) -> ("a power cut lost " ^ s, "")
   | Settle o ->
       ("inspect rejected what the cut left", outcome_text ~noun:cfg.noun o)
-  | Recover o ->
-      ( "the restart failed: the program, run again with no fault on what the \
-         cut left, did not return",
-        outcome_text ~noun:cfg.noun o )
+  | Recover o -> (restart_title ~left:"the cut" o, outcome_text ~noun:cfg.noun o)
   | Again_failed x ->
-      ( "the restart failed: the program, run again with no fault on what a \
-         cut during the previous restart left, did not return",
+      ( restart_title ~left:"a cut during the previous restart" (Raised x),
         exn_text x )
 
 (* A state a cut allows, named by key [k] on top of a cut of the plan. *)
@@ -1822,8 +1842,9 @@ let check_parts name parts =
   dup (List.map part_name parts)
 
 (* [NAMES/HASH/KEY], [NAMES] the names of the parts joined by [+] and
-   [HASH] eight hexadecimal digits, in either case. *)
-let parse_replay ~name ~names ~single ~passes r =
+   [HASH] eight hexadecimal digits, in either case; [NAMES/macos/HASH/KEY]
+   under macOS. *)
+let parse_replay ~name ~names ~os ~single ~passes r =
   let bad () =
     Fmt.invalid_arg "%s: replay is %S, not a replay string of this check" name r
   in
@@ -1831,8 +1852,22 @@ let parse_replay ~name ~names ~single ~passes r =
     | '0' .. '9' | 'a' .. 'f' | 'A' .. 'F' -> true
     | _ -> false
   in
-  let prefix = names ^ "/" in
+  let macos = names ^ "/macos/" in
+  let printed, prefix =
+    if String.starts_with ~prefix:macos r then (`Macos, macos)
+    else (`Linux, names ^ "/")
+  in
   if not (String.starts_with ~prefix r) then bad ()
+  else if printed <> os then
+    match printed with
+    | `Macos ->
+        Fmt.invalid_arg
+          "%s: replay is %S, printed by a check under macOS: pass ~os:`Macos"
+          name r
+    | `Linux ->
+        Fmt.invalid_arg
+          "%s: replay is %S, printed by a check under Linux: drop ~os:`Macos"
+          name r
   else
     let n = String.length prefix in
     let r' = String.sub r n (String.length r - n) in
@@ -1866,7 +1901,9 @@ let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
     | [ Part { m = (module P); _ } ] -> (true, P.noun)
     | _ -> (false, "operation")
   in
-  let replay = Option.map (parse_replay ~name ~names ~single ~passes) replay in
+  let replay =
+    Option.map (parse_replay ~name ~names ~os ~single ~passes) replay
+  in
   let cfg =
     { name; args; os; seed; setup; inspect; app; parts; single; noun }
   in
