@@ -182,20 +182,39 @@ let two_writes env =
 let escaped_io () =
   Eio_chaos.run [ Disk.part (Disk.v ()) ] (fun env -> write env "a" "1")
 
-let restart_fails ?replay () =
-  Eio_chaos.run ?replay [ Disk.part (Disk.v ()) ] two_writes
+let restart_fails ?os ?replay () =
+  Eio_chaos.run ?os ?replay [ Disk.part (Disk.v ()) ] two_writes
 
 let restart_failed () =
   let r = Expect.report restart_fails in
   Alcotest.(check string)
     "title"
     "Eio_chaos.run: the restart failed: the program, run again with no fault \
-     on what the faulty run left, did not return"
+     on what the faulty run left, raised Failure(\"corrupt: \\\"half\\\"\")"
     (Expect.title r);
   Alcotest.(check string)
     "faults" "#3 write a fails with EIO" (Expect.field "faults" r);
   if not (Expect.contains (Expect.field "error" r) "corrupt") then
     Alcotest.failf "not the restart's error: %s" r
+
+(* A restart that finds "half" waits for ever. *)
+let restart_hung () =
+  let r =
+    Expect.report (fun () ->
+        Eio_chaos.run
+          [ Disk.part (Disk.v ()) ]
+          (fun env ->
+            (match read env "a" with
+            | "half" -> Eio.Promise.await (fst (Eio.Promise.create ()))
+            | _ | (exception Eio.Io _) -> ());
+            write env "a" "half";
+            write env "a" "done"))
+  in
+  Alcotest.(check string)
+    "title"
+    "Eio_chaos.run: the restart failed: the program, run again with no fault \
+     on what the faulty run left, hung"
+    (Expect.title r)
 
 let other_exception () =
   let r =
@@ -231,9 +250,46 @@ let replay () =
   let key = Expect.replay r in
   if not (String.starts_with ~prefix:"fs/" key) then
     Alcotest.failf "not a replay of the disk: %s" key;
+  if Expect.contains (Expect.field "replay" r) "~os" then
+    Alcotest.failf "a replay under Linux passes ~os: %s" r;
   Alcotest.(check string)
     "the replay fails the same way" r
     (Expect.report (restart_fails ~replay:key))
+
+let refused_replay f =
+  match f () with
+  | () -> Alcotest.fail "the replay ran"
+  | exception Invalid_argument m -> m
+
+(* A report under macOS replays under macOS: its line passes ~os, its key
+   names the kernel, and a replay under the other kernel is refused. *)
+let replay_macos () =
+  let r = Expect.report (restart_fails ~os:`Macos) in
+  let line = Expect.field "replay" r in
+  if not (String.starts_with ~prefix:"Eio_chaos.run ~os:`Macos ~replay:" line)
+  then Alcotest.failf "the replay does not pass ~os: %s" r;
+  let key = Expect.replay r in
+  Alcotest.(check string)
+    "the replay fails the same way" r
+    (Expect.report (restart_fails ~os:`Macos ~replay:key));
+  let m = refused_replay (restart_fails ~replay:key) in
+  if not (Expect.contains m "~os:`Macos") then
+    Alcotest.failf "the refusal does not say to pass ~os: %s" m;
+  let linux = Expect.replay (Expect.report restart_fails) in
+  let m = refused_replay (restart_fails ~os:`Macos ~replay:linux) in
+  if not (Expect.contains m "Linux") then
+    Alcotest.failf "the refusal does not name Linux: %s" m
+
+(* The first operation alone needs more runs than a budget of one: the
+   report has no trace to show. *)
+let over_budget_at_first () =
+  let r =
+    Expect.report (fun () ->
+        Eio_chaos.run ~budget:1
+          [ Disk.part (Disk.v ()) ]
+          (fun env -> write env "a" "1"))
+  in
+  if Expect.contains r "trace:" then Alcotest.failf "an empty trace: %S" r
 
 (* {1 Two parts} *)
 
@@ -265,6 +321,31 @@ let two_parts () =
       && Expect.contains key "net:resolve:1."
       && Expect.contains key "+fs:write:1.")
   then Alcotest.failf "not a pair across the parts: %s" r
+
+(* What a part says of a cut is labelled with its name once a run has two
+   parts. *)
+let cut_labelled () =
+  let unsafe env =
+    write env "b" "1";
+    sync env;
+    write env "a" "1";
+    Disk.ack env "a"
+  in
+  let r =
+    Expect.report (fun () -> Eio_chaos.run [ Disk.part (Disk.v ()) ] unsafe)
+  in
+  Alcotest.(check string) "one part" "b" (Expect.field "kept" r);
+  let r =
+    Expect.report (fun () ->
+        Eio_chaos.run
+          [ Disk.part (Disk.v ()); Dns.part (Dns.v ()) ]
+          (fun env ->
+            (try resolve env "db" with Eio.Io _ -> ());
+            unsafe env))
+  in
+  Alcotest.(check string) "two parts" "b" (Expect.field "fs kept" r);
+  if Expect.contains r "\n  kept:" then
+    Alcotest.failf "an unlabelled line: %s" r
 
 let same_name () =
   match
@@ -548,10 +629,15 @@ let suite =
       Alcotest.test_case "an escaped Eio.Io: the restart decides" `Quick
         (Expect.passes escaped_io);
       Alcotest.test_case "a failed restart" `Quick restart_failed;
+      Alcotest.test_case "a restart that hangs" `Quick restart_hung;
+      Alcotest.test_case "the first operation over the budget" `Quick
+        over_budget_at_first;
       Alcotest.test_case "another exception fails" `Quick other_exception;
       Alcotest.test_case "a hang fails" `Quick hang;
       Alcotest.test_case "a replay fails the same way" `Quick replay;
+      Alcotest.test_case "a replay under macOS" `Quick replay_macos;
       Alcotest.test_case "two parts, and a pair across them" `Quick two_parts;
+      Alcotest.test_case "a cut's lines name their part" `Quick cut_labelled;
       Alcotest.test_case "two parts with one name" `Quick same_name;
       Alcotest.test_case "restart ~power" `Quick (Expect.passes power);
       Alcotest.test_case "a promise lost to a power cut" `Quick lost;
