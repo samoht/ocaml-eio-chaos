@@ -51,6 +51,30 @@ Eio_chaos.run: the program failed under a fault
 
 The first lookup timed out, and the program raised an exception of its own.
 
+A report is the text of a `Failure`. In a program that sets up its outputs
+with `Console_tty.setup ()`, from
+[console](https://github.com/samoht/ocaml-console), a report left uncaught
+prints on a terminal in the colours of console's theme, so the title, the
+faulted operation and the replay line stand out. On a pipe, in a CI log,
+under `dune test`, with `NO_COLOR` set or with `TERM=dumb`, it prints as the
+text above.
+
+<!-- $MDX file=test/uncaught/fail.ml -->
+```ocaml
+(* A program whose check fails, its report left uncaught. *)
+
+let () =
+  Console_tty.setup ();
+  Eio_chaos.run
+    [ Eio_chaos_toy.resolver () ]
+    (fun env ->
+      match Eio.Net.getaddrinfo_stream env#net "db" with
+      | _ -> ()
+      | exception Eio.Io _ -> failwith "no database")
+```
+
+![The program run on a terminal: the report's title in red, its labels dim, the faulted lookup and its fault highlighted, and the replay line in cyan](doc/report.svg)
+
 The first run has no fault. Each later run starts from the same state and
 meets the faults that a part allows at an operation of the program:
 

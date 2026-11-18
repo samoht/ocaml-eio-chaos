@@ -4,5 +4,5 @@
 
 (mdx
  (files README.md)
- (deps lib/toy/eio_chaos_toy.ml)
+ (deps lib/toy/eio_chaos_toy.ml test/uncaught/fail.ml)
  (libraries eio-chaos eio-chaos.toy eio))
