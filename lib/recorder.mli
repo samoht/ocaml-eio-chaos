@@ -26,6 +26,7 @@ val parent : string -> string
 (** [parent target] is the directory [target] is in: ["/"] for ["/f"], ["."] for
     a target with no ['/']. *)
 
-val pp : (Format.formatter -> entry -> unit) -> t Fmt.t
-(** [pp line] formats the lines of a trace, each operation with [line], after
-    four spaces, and its fault after ["  <- "]. *)
+val steps : (entry -> string) -> t -> Report.step list
+(** [steps text t] is the lines of the trace, each operation as [text] gives it,
+    with the fault it met; a repeated block and lines left out are said in
+    words. *)

@@ -30,7 +30,7 @@ with a line that replays it.")
   (ocaml (>= 5.4))
   (eio (>= 1.7))
   fmt
-  (console (and :with-test (>= 0.9.0)))
+  (console (>= 0.9.0))
   (cstruct (>= 6.2.0))
   mtime
   psq

@@ -1,28 +1,6 @@
 open! Hermetic
 module Op = Op
 
-(* The names reports start with. A report raised as [Failure] prints as
-   itself, its lines kept, wherever an uncaught exception is printed. *)
-let reporters = Atomic.make [ "Eio_chaos.run: " ]
-
-let reporting name =
-  let p = name ^ ": " in
-  let rec add () =
-    let l = Atomic.get reporters in
-    if not (List.mem p l || Atomic.compare_and_set reporters l (p :: l)) then
-      add ()
-  in
-  add ()
-
-let () =
-  Printexc.register_printer (function
-    | Failure m
-      when List.exists
-             (fun prefix -> String.starts_with ~prefix m)
-             (Atomic.get reporters) ->
-        Some m
-    | _ -> None)
-
 (* {1 Guards} *)
 
 (* A run that makes more operations spins, or is more than a check plans
@@ -1176,20 +1154,12 @@ let exec cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
 
 (* {1 Reports} *)
 
-let fail cfg fmt = Fmt.kstr (fun s -> failwith (cfg.name ^ ": " ^ s)) fmt
+let fail cfg fmt = Fmt.kstr (fun s -> Report.fail (Report.title cfg.name s)) fmt
 
 (* What the program printed, a line of a report, its lines set in. *)
 let output out =
   let s = String.trim (Output.printed out) in
   ("output", String.concat "\n            " (String.split_on_char '\n' s))
-
-(* The width of a report's names: that of the longest one shown. *)
-let width lines =
-  List.fold_left
-    (fun w (k, v) -> if v = "" then w else max w (String.length k + 1))
-    9 lines
-
-let line w ppf (k, v) = if v <> "" then Fmt.pf ppf "  %-*s %s@\n" w (k ^ ":") v
 
 (* [NAMES/HASH/KEY], with [/macos] after [NAMES] for a check under macOS. *)
 let replay_string cfg hash key =
@@ -1200,12 +1170,10 @@ let replay_string cfg hash key =
 let os_arg = function `Linux -> "" | `Macos -> " ~os:`Macos"
 
 (* The trace of a run, if it has an operation to show. *)
-let pp_trace cfg ppf (t : record) =
+let steps cfg (t : record) =
   match t.lines with
-  | Some l ->
-      let s = Fmt.str "%a" (Recorder.pp (pp_step cfg)) l in
-      if s <> "" then Fmt.pf ppf "  trace:@\n%s" s
-  | None -> ()
+  | Some l -> Recorder.steps (Fmt.to_to_string (pp_step cfg)) l
+  | None -> []
 
 (* The report of a failing run: the scenario's lines, the trace, and the
    replay that runs it alone. *)
@@ -1218,36 +1186,48 @@ let report cfg ~title ~hash ~key ~matched ~diverged ~(trace : record) ~out
           hash)
       matched
   in
-  let lines =
+  let fields =
     lines
     @ Option.fold ~none:[] ~some:(fun m -> [ ("matched", m) ]) matched
     @ Option.fold ~none:[] ~some:(fun d -> [ ("diverged", d) ]) diverged
     @ [ ("error", error); output out ]
   in
-  let w = width lines in
-  Fmt.failwith "%s: %s@\n%a%a  %-*s %s%s ~replay:%S %s" cfg.name title
-    Fmt.(list ~sep:nop (line w))
-    lines (pp_trace cfg) trace w "replay:" cfg.name (os_arg cfg.os)
-    (replay_string cfg hash key)
-    cfg.args
+  let replay =
+    Fmt.str "%s%s ~replay:%S %s" cfg.name (os_arg cfg.os)
+      (replay_string cfg hash key)
+      cfg.args
+  in
+  Report.fail
+    {
+      name = cfg.name;
+      title;
+      fields;
+      trace = steps cfg trace;
+      replay = Some replay;
+    }
 
 (* The first run failed, or stopped at the budget: its trace says where. *)
 let refuse_first cfg ~(trace : record) ~out o ~budget ~what =
-  let head ppf = function
+  let title =
+    match o with
     | Over_budget at ->
-        Fmt.pf ppf
-          "%s: the linear tier needs more than the budget of %d runs by \
-           operation #%d of the first run, which stopped there, and a check \
-           never passes on a partial one. Shrink the program, or raise \
-           ~budget."
-          cfg.name budget at
+        Fmt.str
+          "the linear tier needs more than the budget of %d runs by operation \
+           #%d of the first run, which stopped there, and a check never passes \
+           on a partial one. Shrink the program, or raise ~budget."
+          budget at
     | o ->
-        Fmt.pf ppf "%s: the run with no %s failed: %s" cfg.name what
+        Fmt.str "the run with no %s failed: %s" what
           (outcome_text ~noun:cfg.noun o)
   in
-  Fmt.kstr
-    (fun report -> failwith (String.trim report))
-    "%a@\n%a%a" head o (line 9) (output out) (pp_trace cfg) trace
+  Report.fail
+    {
+      name = cfg.name;
+      title;
+      fields = [ output out ];
+      trace = steps cfg trace;
+      replay = None;
+    }
 
 let no_longer cfg ~hash (h, k) =
   if h = hash then
@@ -1894,7 +1874,7 @@ let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
     | Some b -> b
   in
   check_parts name parts;
-  reporting name;
+  Report.reporting name;
   let names = String.concat "+" (List.map part_name parts) in
   let single, noun =
     match parts with

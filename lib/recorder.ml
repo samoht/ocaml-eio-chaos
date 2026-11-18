@@ -246,7 +246,7 @@ let plural k = if k = 1 then "" else "s"
 
 (* The report's lines: the first and last [keep] and those around the first
    fault, or all of them when they are few. *)
-let pp pp_entry ppf t =
+let steps text t =
   finish t;
   let n = t.n in
   let shown i =
@@ -254,23 +254,23 @@ let pp pp_entry ppf t =
     || i >= n - keep
     || match t.fault with Some f -> abs (i - f) <= context | None -> false
   in
-  let rec pp i =
-    if i < n then (
-      if shown i then begin
-        (match line t i with
-        | Line ({ met = None; _ } as e) -> Fmt.pf ppf "    %a@\n" pp_entry e
-        | Line ({ met = Some (_, text); _ } as e) ->
-            Fmt.pf ppf "    %a  <- %s@\n" pp_entry e text
-        | Repeated { period; times; first; last } ->
-            Fmt.pf ppf
-              "    ... the %d operation%s above, %d more time%s, #%d to #%d@\n"
-              period (plural period) times (plural times) first last);
-        pp (i + 1)
-      end
-      else
-        let rec skip j = if j < n && not (shown j) then skip (j + 1) else j in
-        let j = skip i in
-        Fmt.pf ppf "    ... %d more line%s@\n" (j - i) (plural (j - i));
-        pp j)
+  let step i : Report.step =
+    match line t i with
+    | Line ({ met = None; _ } as e) -> Op (text e)
+    | Line ({ met = Some (_, f); _ } as e) -> Fault (text e, f)
+    | Repeated { period; times; first; last } ->
+        Fmt.kstr
+          (fun s -> Report.Elided s)
+          "... the %d operation%s above, %d more time%s, #%d to #%d" period
+          (plural period) times (plural times) first last
   in
-  pp 0
+  let rec steps acc i =
+    if i >= n then List.rev acc
+    else if shown i then steps (step i :: acc) (i + 1)
+    else
+      let rec skip j = if j < n && not (shown j) then skip (j + 1) else j in
+      let j = skip i in
+      let s = Fmt.str "... %d more line%s" (j - i) (plural (j - i)) in
+      steps (Report.Elided s :: acc) j
+  in
+  steps [] 0

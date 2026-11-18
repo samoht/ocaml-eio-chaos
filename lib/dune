@@ -1,13 +1,14 @@
 (library
  (name eio_chaos)
  (public_name eio-chaos)
- (private_modules quiet_mock systhread op plan output stdenv recorder)
+ (private_modules quiet_mock systhread op plan output stdenv recorder report)
  (libraries
   hermetic
   eio
   eio.utils
   eio.unix
   fmt
+  console
   cstruct
   mtime
   psq
