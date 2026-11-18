@@ -407,6 +407,7 @@ module Private : sig
 
   val run :
     name:string ->
+    ?args:string ->
     ?passes:pass list ->
     ?os:[< os ] ->
     ?budget:int ->
@@ -417,10 +418,13 @@ module Private : sig
     part list ->
     (env -> unit) ->
     unit
-  (** [run ~name ~passes parts app] is {!val-run} [parts app] with the passes
-      [passes] alone (defaults to both), for a one-call shortcut of another
-      package: its report names [name], and replays as [name ~replay:"..." app].
-  *)
+  (** [run ~name ~args ~passes parts app] is {!val-run} [parts app] with the
+      passes [passes] alone (defaults to both), for a one-call shortcut of
+      another package: its report names [name], and replays as
+      [name ~replay:"..." args], [args] defaulting to ["app"]. *)
+
+  val name : part -> string
+  (** [name p] is the name of [p], as {!PART.name} gives it. *)
 
   val restarted : env -> bool
   (** [restarted env] is [true] iff [env] is that of a restart. *)

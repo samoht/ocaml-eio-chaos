@@ -1889,9 +1889,12 @@ let run ?os ?budget ?seed ?replay ?setup ?inspect parts app =
 module Private = struct
   type nonrec pass = pass = Errors | Cuts
 
-  let run ~name ?passes ?os ?budget ?seed ?replay ?setup ?inspect parts app =
-    run_named ~name ~args:"app" ?passes ?os ?budget ?seed ?replay ?setup
-      ?inspect parts app
+  let run ~name ?(args = "app") ?passes ?os ?budget ?seed ?replay ?setup
+      ?inspect parts app =
+    run_named ~name ~args ?passes ?os ?budget ?seed ?replay ?setup ?inspect
+      parts app
+
+  let name = part_name
 
   let restarted (env : env) =
     match env#chaos.st with
