@@ -7,6 +7,7 @@
 
 (rule
  (alias runtest)
+ (package eio-chaos)
  (enabled_if
   (<> %{profile} afl))
  (deps fuzz.exe)
@@ -15,6 +16,7 @@
 
 (rule
  (alias fuzz)
+ (package eio-chaos)
  (enabled_if
   (= %{profile} afl))
  (deps fuzz.exe)
