@@ -16,14 +16,15 @@
 (package
  (name eio-chaos)
  (synopsis "Chaos tests of Eio programs on simulated devices that fail together")
- (tags (eio testing chaos))
+ (tags (eio test chaos))
  (description
   "eio-chaos runs an Eio program many times on simulated devices, each
-time with a failure the real kernel can produce or a power cut, and restarts it
-on what the failure left. The devices are parts that other packages provide,
-such as a disk or a network. Eio_chaos.run builds the program's env from them,
-with simulated clocks, seeded entropy and captured output, and reports the
-first failure with a line that replays it.")
+time with a fault the real kernel can produce or a power cut, and restarts it
+on what the fault left. The devices are parts that other packages provide,
+such as a disk or a network; eio-chaos.toy is a toy one, to read as an
+example. Eio_chaos.run builds the program's env from them, with simulated
+clocks, seeded entropy and captured output, and reports the first failing run
+with a line that replays it.")
  (depends
   (hermetic (>= 0.1.0))
   (ocaml (>= 5.4))
