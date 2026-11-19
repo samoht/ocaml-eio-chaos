@@ -5,7 +5,7 @@ type Eio.Exn.Backend.t += Not_simulated of string
 let () =
   Eio.Exn.Backend.register_pp (fun ppf -> function
     | Not_simulated what ->
-        Fmt.pf ppf "%s: no part of the check simulates it" what;
+        Fmt.pf ppf "%s: no device of the check simulates it" what;
         true
     | _ -> false)
 

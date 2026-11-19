@@ -8,7 +8,7 @@ colours are console's theme, which a release of console may change.
     error:    Failure("no database")
     trace:
       #1 lookup db  <- times out
-    replay:   Eio_chaos.run ~replay:"dns/355f1c0e/lookup:1.timeout" parts app
+    replay:   Eio_chaos.run ~replay:"dns/355f1c0e/lookup:1.timeout" devices app
   [2]
 
 A check of another package raises its report with Eio_chaos.fail: a table

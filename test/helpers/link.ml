@@ -90,7 +90,7 @@ let end_name = function `A -> "a" | `B -> "b"
 let outgoing l = function `A -> l.ab | `B -> l.ba
 let incoming l = function `A -> l.ba | `B -> l.ab
 
-(* {1 The part} *)
+(* {1 The device} *)
 
 module Net = struct
   type nonrec t = t
@@ -107,7 +107,7 @@ end
 let handler = Eio.Net.Pi.network (module Net)
 let capability t = Eio_chaos.Net (Eio.Resource.T (t, handler))
 
-module Part_ = struct
+module Device_ = struct
   type nonrec t = t
 
   let name = "link"
@@ -142,9 +142,9 @@ module Part_ = struct
     capability t
 end
 
-module P = Eio_chaos.Part (Part_)
+module P = Eio_chaos.Device (Device_)
 
-let part t = P.v t
+let device t = P.v t
 
 let get (env : Eio_chaos.env) =
   match P.find env#chaos with

@@ -154,7 +154,7 @@ let capability t =
   in
   Eio_chaos.Fs (d, d)
 
-module Part = struct
+module Device = struct
   type nonrec t = t
 
   let name = "fs"
@@ -211,9 +211,9 @@ module Part = struct
     capability t
 end
 
-module P = Eio_chaos.Part (Part)
+module P = Eio_chaos.Device (Device)
 
-let part t = P.v t
+let device t = P.v t
 
 let ack env name =
   match P.find env#chaos with

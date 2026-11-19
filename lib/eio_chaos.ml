@@ -22,7 +22,7 @@ type outcome =
   | Passed
   | Raised of exn
   | Deadlock of string (* the fibers the program waits on *)
-  | Hung of string (* why a part saw the program spin *)
+  | Hung of string (* why a device saw the program spin *)
   | Time_limit
   | Busy
   | Too_long
@@ -33,7 +33,7 @@ type outcome =
   | Restart of exn option * outcome
   (* what the faulty run raised, if anything, and how its restart failed *)
   | Lost of exn option * string
-  (* what the faulty run raised, and the promise a part lost *)
+  (* what the faulty run raised, and the promise a device lost *)
   | Inspected of exn option * exn
   (* what the faulty run raised, and what inspect raised *)
   | Multiplied of outcome * string * int
@@ -100,10 +100,10 @@ let () =
 
 (* What a phase keeps of its operations: the report's lines, its first [cap]
    operations, which the plan of the next scenarios reads, those at [marked]
-   places, which the report names, and those that changed what a part
+   places, which the report names, and those that changed what a device
    keeps. *)
 (* Where a second run with no fault first differs from the first, as it
-   goes: in the part or kind of an operation, or in its target alone. *)
+   goes: in the device or kind of an operation, or in its target alone. *)
 type diff = {
   against : Plan.step array;
   mutable seen : int;
@@ -197,7 +197,7 @@ let found r p =
 
 (* {1 Streaks} *)
 
-(* An operation: its part and kind, and the target it names, or the
+(* An operation: its device and kind, and the target it names, or the
    directory that target is in. *)
 type target = string * string * [ `Target | `Dir ] * string
 
@@ -240,7 +240,7 @@ type pass = Errors | Cuts
 type phase = Setup | Running | Inspecting | Restarting | Again | Ended
 type keep = Lose_unsynced | Keep_unsynced | Choose of (int -> int)
 
-(* A part's state, found again by the identity of its type. *)
+(* A device's state, found again by the identity of its type. *)
 type any = Any : 'a Type.Id.t * 'a -> any
 
 (* What a fiber does, for the report of a hang: the kind of operation it
@@ -252,8 +252,8 @@ type state = {
   pass : pass;
   scenario : Plan.scenario;
   noun : string;
-  found_parts : any list;
-  mutable cut_parts : unit -> (string * string) list;
+  found_devices : any list;
+  mutable cut_devices : unit -> (string * string) list;
   mutable phase : phase;
   trace : record;
   rtrace : record;
@@ -423,7 +423,7 @@ let shared st (op : Op.t) =
       op
 
 (* The floor of the linear tier of cuts, once the operation before [step] is
-   known to have changed what a part keeps or not. *)
+   known to have changed what a device keeps or not. *)
 let cut_floor st (step : Plan.step) ~durable =
   Option.iter
     (fun ((p : Plan.step), sure, durable) ->
@@ -481,7 +481,7 @@ let decide_running st t (op : Op.t) ~name ~pp ~lasting ~durable ~alone ~mild
         cut_floor st step ~durable:(List.length durable + List.length alone);
       if (not st.cut) && cut_matches st.scenario.cut step then begin
         st.cut_at <- Some step;
-        st.cut_lines <- st.cut_parts ();
+        st.cut_lines <- st.cut_devices ();
         st.cut <- true;
         st.stop <- st.phase_sw
       end;
@@ -508,7 +508,7 @@ let decide_restarting st (op : Op.t) =
       let step = { Plan.index; op; rank; faults = No_faults; places = [] } in
       (fiber st).last <- Some step;
       if (not st.cut) && cut_matches st.scenario.rcut step then begin
-        ignore (st.cut_parts () : (string * string) list);
+        ignore (st.cut_devices () : (string * string) list);
         st.cut <- true;
         st.stop <- st.phase_sw
       end;
@@ -597,7 +597,7 @@ let lost t what =
   | Some st -> st.lost <- what :: st.lost
   | None -> invalid_arg "Eio_chaos.lost: none is no run"
 
-(* {1 Parts} *)
+(* {1 Devices} *)
 
 type os = [ `Linux | `Macos | `Windows ]
 
@@ -605,7 +605,7 @@ type capability =
   | Fs of Eio.Fs.dir_ty Eio.Path.t * Eio.Fs.dir_ty Eio.Path.t
   | Net of [ `Generic ] Eio.Net.ty Eio.Resource.t
 
-module type PART = sig
+module type DEVICE = sig
   type chaos
   type t
 
@@ -629,20 +629,20 @@ module type PART = sig
 end
 with type chaos := t
 
-type part =
-  | Part : {
-      m : (module PART with type t = 'a);
+type device =
+  | Device : {
+      m : (module DEVICE with type t = 'a);
       state : 'a;
       quiet : bool;
       id : 'a Type.Id.t;
     }
-      -> part
+      -> device
 
 let live st = st.phase <> Ended
 
-module Part (P : PART) = struct
+module Device (P : DEVICE) = struct
   let id : P.t Type.Id.t = Type.Id.make ()
-  let v state = Part { m = (module P); state; quiet = false; id }
+  let v state = Device { m = (module P); state; quiet = false; id }
 
   let state : any -> P.t option =
    fun (Any (i, s)) ->
@@ -650,12 +650,12 @@ module Part (P : PART) = struct
 
   let find t =
     match t.st with
-    | Some st when live st -> List.find_map state st.found_parts
+    | Some st when live st -> List.find_map state st.found_devices
     | Some _ | None -> None
 end
 
-let quiet (Part p) = Part { p with quiet = true }
-let part_name (Part { m = (module P); _ }) = P.name
+let quiet (Device p) = Device { p with quiet = true }
+let device_name (Device { m = (module P); _ }) = P.name
 
 (* {1 The env} *)
 
@@ -728,9 +728,9 @@ let env w caps : env =
 let check_capabilities name caps =
   let count p = List.length (List.filter p caps) in
   if count (function Fs _ -> true | Net _ -> false) > 1 then
-    Fmt.invalid_arg "%s: two parts give env#fs" name;
+    Fmt.invalid_arg "%s: two devices give env#fs" name;
   if count (function Net _ -> true | Fs _ -> false) > 1 then
-    Fmt.invalid_arg "%s: two parts give env#net" name
+    Fmt.invalid_arg "%s: two devices give env#net" name
 
 (* {1 Runs} *)
 
@@ -742,19 +742,21 @@ type config = {
   setup : env -> unit;
   inspect : env -> unit;
   app : env -> unit;
-  parts : part list;
-  single : bool; (* one part: keys and lines name no device *)
+  devices : device list;
+  single : bool; (* one device: keys and lines name no device *)
   noun : string;
 }
 
 (* A faulty run may end with [Eio.Io], or with what a failure of one of its
-   parts makes a program raise, from one fiber or several. *)
-let rec is_io parts = function
+   devices makes a program raise, from one fiber or several. *)
+let rec is_io devices = function
   | Eio.Io _ -> true
   | Eio.Exn.Multiple l ->
-      l <> [] && List.for_all (fun (x, _) -> is_io parts x) l
+      l <> [] && List.for_all (fun (x, _) -> is_io devices x) l
   | x ->
-      List.exists (fun (Part { m = (module P); _ }) -> P.indeterminate x) parts
+      List.exists
+        (fun (Device { m = (module P); _ }) -> P.indeterminate x)
+        devices
 
 (* A run ends once [halted] holds why. A hang says which fibers wait, as
    [waits] tells of their trace ids. *)
@@ -849,9 +851,9 @@ let scenario_state cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
     pass;
     scenario = s;
     noun = cfg.noun;
-    found_parts =
-      List.map (fun (Part { state; id; _ }) -> Any (id, state)) cfg.parts;
-    cut_parts = (fun () -> []);
+    found_devices =
+      List.map (fun (Device { state; id; _ }) -> Any (id, state)) cfg.devices;
+    cut_devices = (fun () -> []);
     phase = Setup;
     trace = record ?cap ~marked ?against ();
     rtrace = record ?cap ~lines:false ();
@@ -891,28 +893,28 @@ let scenario_state cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
 (* What the phases of one scenario's loop share. *)
 type ctx = { cfg : config; st : state; w : world; rkeep : keep option }
 
-(* What each part says of a cut, labelled with its name once a run has two
-   parts. *)
-let cut_parts cfg () =
+(* What each device says of a cut, labelled with its name once a run has two
+   devices. *)
+let cut_devices cfg () =
   List.concat_map
-    (fun (Part { m = (module P); state; _ }) ->
+    (fun (Device { m = (module P); state; _ }) ->
       let l = P.cut state in
       if cfg.single then l else List.map (fun (k, v) -> (P.name ^ " " ^ k, v)) l)
-    cfg.parts
+    cfg.devices
 
-let restart_parts cfg ~power ~cut =
+let restart_devices cfg ~power ~cut =
   List.map
-    (fun (Part { m = (module P); state; _ }) -> P.restart state ~power ~cut)
-    cfg.parts
+    (fun (Device { m = (module P); state; _ }) -> P.restart state ~power ~cut)
+    cfg.devices
 
 let first_lost st = match List.rev st.lost with [] -> None | l :: _ -> Some l
 let run_app c caps = c.cfg.app (env c.w caps)
 
-(* After a run with a fault and no cut: each part restarted, [inspect], then
+(* After a run with a fault and no cut: each device restarted, [inspect], then
    the program again. *)
 let restart_errors c e =
   c.st.phase <- Inspecting;
-  let caps = restart_parts c.cfg ~power:false ~cut:None in
+  let caps = restart_devices c.cfg ~power:false ~cut:None in
   match first_lost c.st with
   | Some l -> Lost (e, l)
   | None -> (
@@ -930,10 +932,11 @@ let run_errors c caps =
   match run_app c caps with
   | () when faulty -> restart_errors c None
   | () -> Passed
-  | exception x when faulty && is_io c.cfg.parts x -> restart_errors c (Some x)
+  | exception x when faulty && is_io c.cfg.devices x ->
+      restart_errors c (Some x)
   | exception x -> Raised x
 
-(* What a cut left: a promise a part lost, or what [inspect] says of it. *)
+(* What a cut left: a promise a device lost, or what [inspect] says of it. *)
 let settle c caps =
   match first_lost c.st with
   | Some l -> Some (Settle (Lost (None, l)))
@@ -946,7 +949,7 @@ let settle c caps =
 (* After a cut during the restart: the program once more. *)
 let again c =
   c.st.phase <- Inspecting;
-  let caps = restart_parts c.cfg ~power:true ~cut:None in
+  let caps = restart_devices c.cfg ~power:true ~cut:None in
   match settle c caps with
   | Some e -> Some e
   | None -> (
@@ -961,7 +964,7 @@ let again c =
 let recover c =
   let st = c.st in
   st.phase <- Inspecting;
-  let caps = restart_parts c.cfg ~power:true ~cut:c.rkeep in
+  let caps = restart_devices c.cfg ~power:true ~cut:c.rkeep in
   match settle c caps with
   | Some e -> Some e
   | None -> (
@@ -975,7 +978,7 @@ let recover c =
       | Passed, None -> None
       | Passed, Some _ ->
           if not st.cut then
-            ignore (cut_parts c.cfg () : (string * string) list);
+            ignore (cut_devices c.cfg () : (string * string) list);
           again c
       | o, _ -> Some (Recover o))
 
@@ -983,15 +986,15 @@ let run_cuts c caps =
   let st = c.st in
   let o = in_phase st (fun () -> run_app c caps) in
   if not st.cut then begin
-    st.cut_lines <- cut_parts c.cfg ();
+    st.cut_lines <- cut_devices c.cfg ();
     st.cut <- true
   end;
   match if st.kept_run then Kept_going else o with
   | Passed -> recover c
-  | Raised x when st.scenario.faults <> [] && is_io c.cfg.parts x -> recover c
+  | Raised x when st.scenario.faults <> [] && is_io c.cfg.devices x -> recover c
   | o -> Some (Program o)
 
-(* The program's run in its loop, after [setup] on new parts. *)
+(* The program's run in its loop, after [setup] on new devices. *)
 let in_scenario cfg (st : state) ~trail ~rtrail out clock mono charge =
   st.mono <- Some mono;
   st.charge <- charge;
@@ -1003,22 +1006,22 @@ let in_scenario cfg (st : state) ~trail ~rtrail out clock mono charge =
   let w = { envs = 0; out; clock; mono; chaos = chaos false } in
   let caps =
     List.map
-      (fun (Part { m = (module P); state; quiet; _ }) ->
+      (fun (Device { m = (module P); state; quiet; _ }) ->
         P.start state ~os:cfg.os ~sw ~clock ~mono_clock:mono (chaos quiet))
-      cfg.parts
+      cfg.devices
   in
   check_capabilities cfg.name caps;
   cfg.setup (env w caps);
-  st.cut_parts <- cut_parts cfg;
+  st.cut_devices <- cut_devices cfg;
   let s = st.scenario in
   let keep trail c =
     Option.map (fun (c : Plan.cut) -> keep_of trail c.state) c
   in
   let caps =
     List.map
-      (fun (Part { m = (module P); state; _ }) ->
+      (fun (Device { m = (module P); state; _ }) ->
         P.run state ~cut:(keep trail s.cut) ~faults:(names_of_device s P.name))
-      cfg.parts
+      cfg.devices
   in
   let c = { cfg; st; w; rkeep = keep rtrail s.rcut } in
   st.phase <- Running;
@@ -1058,9 +1061,9 @@ let errors_outcome st outcome =
 let pp_op cfg ppf (op : Op.t) =
   let pp =
     List.find_map
-      (fun (Part { m = (module P); _ }) ->
+      (fun (Device { m = (module P); _ }) ->
         if String.equal P.name (Op.device op) then Some P.pp_op else None)
-      cfg.parts
+      cfg.devices
     |> Option.value ~default:Op.pp
   in
   if cfg.single then pp ppf op else Fmt.pf ppf "%s %a" (Op.device op) pp op
@@ -1193,7 +1196,7 @@ let os_name = function
 (* [NAMES/HASH/KEY], with [/macos] or [/windows] after [NAMES] for a check
    under macOS or Windows. *)
 let replay_string cfg hash key =
-  let names = String.concat "+" (List.map part_name cfg.parts) in
+  let names = String.concat "+" (List.map device_name cfg.devices) in
   Fmt.str "%s%s/%s/%s" names (os_key cfg.os) hash key
 
 (* The trace of a run, if it has an operation to show. *)
@@ -1465,8 +1468,8 @@ let errors cfg ~budget ~replay first =
         ~attempt:(fun ~keep s -> attempt ~keep s)
         linear
 
-(* The pass with no cut. It is [true] iff an operation a part may fail may
-   also change what a part keeps, so the pass with a cut has work to do. *)
+(* The pass with no cut. It is [true] iff an operation a device may fail may
+   also change what a device keeps, so the pass with a cut has work to do. *)
 let check_errors cfg ~budget ~replay =
   (* A replay runs one scenario, whatever the budget. *)
   let first, out =
@@ -1477,8 +1480,8 @@ let check_errors cfg ~budget ~replay =
   if first.outcome <> Passed then
     refuse_first cfg ~trace:first.trace ~out first.outcome ~budget ~what:"fault";
   let first = kept first.trace in
-  (* With every part quiet, or none, the check is the first run alone. *)
-  let loud = List.exists (fun (Part p) -> not p.quiet) cfg.parts in
+  (* With every device quiet, or none, the check is the first run alone. *)
+  let loud = List.exists (fun (Device p) -> not p.quiet) cfg.devices in
   if first = [] && loud then
     failf cfg "the program makes no %s, so it tests nothing" cfg.noun;
   let some = candidates first in
@@ -1835,17 +1838,17 @@ let check_cuts cfg ~budget ~replay =
 
 (* {1 The check} *)
 
-let check_parts name parts =
+let check_devices name devices =
   let rec dup = function
     | [] -> ()
     | n :: ns ->
         if List.mem n ns then
-          Fmt.invalid_arg "%s: two parts are named %S" name n;
+          Fmt.invalid_arg "%s: two devices are named %S" name n;
         dup ns
   in
-  dup (List.map part_name parts)
+  dup (List.map device_name devices)
 
-(* [NAMES/HASH/KEY], [NAMES] the names of the parts joined by [+] and
+(* [NAMES/HASH/KEY], [NAMES] the names of the devices joined by [+] and
    [HASH] eight hexadecimal digits, in either case; [NAMES/macos/HASH/KEY]
    under macOS and [NAMES/windows/HASH/KEY] under Windows. *)
 let parse_replay ~name ~names ~os ~single ~passes r =
@@ -1889,7 +1892,7 @@ let parse_replay ~name ~names ~os ~single ~passes r =
     | _ -> bad ()
 
 let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
-    ?replay ?(setup = ignore) ?(inspect = ignore) parts app =
+    ?replay ?(setup = ignore) ?(inspect = ignore) devices app =
   let os = match os with Some (#os as os) -> os | None -> `Linux in
   let budget =
     match budget with
@@ -1898,18 +1901,18 @@ let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
         Fmt.invalid_arg "%s: budget is %d, must be positive" name b
     | Some b -> b
   in
-  check_parts name parts;
-  let names = String.concat "+" (List.map part_name parts) in
+  check_devices name devices;
+  let names = String.concat "+" (List.map device_name devices) in
   let single, noun =
-    match parts with
-    | [ Part { m = (module P); _ } ] -> (true, P.noun)
+    match devices with
+    | [ Device { m = (module P); _ } ] -> (true, P.noun)
     | _ -> (false, "operation")
   in
   let replay =
     Option.map (parse_replay ~name ~names ~os ~single ~passes) replay
   in
   let cfg =
-    { name; args; os; seed; setup; inspect; app; parts; single; noun }
+    { name; args; os; seed; setup; inspect; app; devices; single; noun }
   in
   let saved = Random.get_state () in
   Fun.protect ~finally:(fun () -> Random.set_state saved) @@ fun () ->
@@ -1923,23 +1926,23 @@ let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
       if cuts && Plan.well_formed k then check_cuts cfg ~budget ~replay:(Some r)
       else ignore (check_errors cfg ~budget ~replay:(Some r) : bool)
 
-let run ?name ?os ?budget ?seed ?replay ?setup ?inspect parts app =
+let run ?name ?os ?budget ?seed ?replay ?setup ?inspect devices app =
   let name, args =
     match name with
-    | None -> ("Eio_chaos.run", "parts app")
+    | None -> ("Eio_chaos.run", "devices app")
     | Some n -> (n, "app")
   in
-  run_named ~name ~args ?os ?budget ?seed ?replay ?setup ?inspect parts app
+  run_named ~name ~args ?os ?budget ?seed ?replay ?setup ?inspect devices app
 
 module Private = struct
   type nonrec pass = pass = Errors | Cuts
 
   let run ~name ?(args = "app") ?passes ?os ?budget ?seed ?replay ?setup
-      ?inspect parts app =
+      ?inspect devices app =
     run_named ~name ~args ?passes ?os ?budget ?seed ?replay ?setup ?inspect
-      parts app
+      devices app
 
-  let name = part_name
+  let name = device_name
 
   let restarted (env : env) =
     match env#chaos.st with
@@ -1947,7 +1950,7 @@ module Private = struct
         match st.phase with Restarting | Again -> true | _ -> false)
     | None -> false
 
-  let within ?os parts f =
+  let within ?os devices f =
     let os = match os with Some (#os as os) -> os | None -> `Linux in
     let halted = ref None in
     match
@@ -1958,9 +1961,9 @@ module Private = struct
       Eio.Switch.run @@ fun sw ->
       let caps =
         List.map
-          (fun (Part { m = (module P); state; _ }) ->
+          (fun (Device { m = (module P); state; _ }) ->
             P.start state ~os ~sw ~clock ~mono_clock:mono none)
-          parts
+          devices
       in
       let w = { envs = 0; out; clock; mono; chaos = none } in
       f (env w caps)

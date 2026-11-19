@@ -8,7 +8,7 @@ let parent path =
   | Some i -> String.sub path 0 i
   | None -> "."
 
-(* What a repeated operation keeps: its part, its kind, the directory it is
+(* What a repeated operation keeps: its device, its kind, the directory it is
    in and its fault, so a retry under one name or under fresh ones repeats. *)
 let shape e =
   (Op.device e.op, Op.kind e.op, parent (Op.target e.op), Option.map fst e.met)

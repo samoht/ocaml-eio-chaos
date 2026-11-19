@@ -1,6 +1,6 @@
-(* The runner on a toy part of linked streams: failures inside a read, many
+(* The runner on a toy device of linked streams: failures inside a read, many
    links alike, mild failures, split operations, conditions of a whole run,
-   and what a hang report and a part that sees a spin say. *)
+   and what a hang report and a device that sees a spin say. *)
 
 let check = Eio_chaos.run
 let met l = List.sort_uniq compare (List.concat (Link.runs l))
@@ -33,7 +33,7 @@ let two_sends ~reads env =
 let inside () =
   let l = Link.v () in
   check
-    [ Link.part l ]
+    [ Link.device l ]
     (fun env -> try two_sends ~reads:5 env with End_of_file | Eio.Io _ -> ());
   if not (List.mem 3 (Link.places l)) then
     Alcotest.failf "no failure after 3 bytes: %a"
@@ -44,7 +44,7 @@ let inside_report () =
   let r =
     Expect.report (fun () ->
         check
-          [ Link.part (Link.v ()) ]
+          [ Link.device (Link.v ()) ]
           (fun env ->
             try two_sends ~reads:1 env with End_of_file | Eio.Io _ -> ()))
   in
@@ -58,7 +58,7 @@ let inside_report () =
 let alike () =
   let l = Link.v () in
   check ~budget:200
-    [ Link.part l ]
+    [ Link.device l ]
     (fun env ->
       for _ = 1 to 100 do
         try
@@ -81,7 +81,7 @@ let alike () =
 let mild () =
   let l = Link.v () in
   check ~budget:2000
-    [ Link.part l ]
+    [ Link.device l ]
     (fun env ->
       for _ = 1 to 5 do
         try two_sends ~reads:5 env with End_of_file | Eio.Io _ -> ()
@@ -96,7 +96,7 @@ let split () =
   let r =
     Expect.report (fun () ->
         check
-          [ Link.part (Link.v ()) ]
+          [ Link.device (Link.v ()) ]
           (fun env ->
             try
               let l = Link.open_ env in
@@ -116,12 +116,12 @@ let split () =
           its operations")
   then Alcotest.failf "not the operations a condition split: %s" r
 
-(* A condition of the whole run, which the part learns as the run starts:
+(* A condition of the whole run, which the device learns as the run starts:
    every open of the run is refused. *)
 let whole_run () =
   let l = Link.v () in
   check
-    [ Link.part l ]
+    [ Link.device l ]
     (fun env ->
       let opened = try Some (Link.open_ env) with Eio.Io _ -> None in
       if Link.down l then begin
@@ -137,7 +137,7 @@ let waits () =
   let r =
     Expect.report (fun () ->
         check
-          [ Link.part (Link.v ()) ]
+          [ Link.device (Link.v ()) ]
           (fun env ->
             Eio.Switch.run @@ fun sw ->
             let l = Link.open_ env in
@@ -152,13 +152,13 @@ let waits () =
           body returned: a fiber in a recv, last #2 recv 1b@0+8")
   then Alcotest.failf "the report does not name the fiber: %s" r
 
-(* A program that receives again at once from a link that was cut: the part
+(* A program that receives again at once from a link that was cut: the device
    sees it spin. *)
 let spin () =
   let r =
     Expect.report (fun () ->
         check
-          [ Link.part (Link.v ()) ]
+          [ Link.device (Link.v ()) ]
           (fun env ->
             let l = Link.open_ env in
             Link.send env l `A "abc";
@@ -182,10 +182,10 @@ let eof env =
   with Eio.Io _ -> raise End_of_file
 
 let indeterminate () =
-  let r = Expect.report (fun () -> check [ Disk.part (Disk.v ()) ] eof) in
+  let r = Expect.report (fun () -> check [ Disk.device (Disk.v ()) ] eof) in
   Alcotest.(check string)
     "title" "Eio_chaos.run: the program failed under a fault" (Expect.title r);
-  check [ Disk.part (Disk.v ()); Link.part (Link.v ()) ] eof
+  check [ Disk.device (Disk.v ()); Link.device (Link.v ()) ] eof
 
 (* Turns move the clock, other fibers waiting. *)
 let turns () =
@@ -199,7 +199,7 @@ let turns () =
 
 let faulted () =
   check
-    [ Link.part (Link.v ()) ]
+    [ Link.device (Link.v ()) ]
     (fun env ->
       if Eio_chaos.faulted env#chaos then failwith "faulted at the start";
       match Link.open_ env with
@@ -222,7 +222,7 @@ let suite =
       Alcotest.test_case "split operations do not count" `Quick split;
       Alcotest.test_case "a condition of the whole run" `Quick whole_run;
       Alcotest.test_case "a hang names the fibers waited on" `Quick waits;
-      Alcotest.test_case "a part stops a spin" `Quick spin;
+      Alcotest.test_case "a device stops a spin" `Quick spin;
       Alcotest.test_case "what a failure makes a program raise" `Quick
         indeterminate;
       Alcotest.test_case "turns move the clock" `Quick turns;

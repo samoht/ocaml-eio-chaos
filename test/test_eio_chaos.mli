@@ -2,4 +2,4 @@
 
 val suite : string * unit Alcotest.test_case list
 (** [suite] checks the runs the runner makes, the restart rule, replay, two
-    parts at once, power cuts and the env a program gets. *)
+    devices at once, power cuts and the env a program gets. *)

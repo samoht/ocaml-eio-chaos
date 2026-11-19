@@ -1,8 +1,8 @@
-(** The simulated capabilities of a run's env that no part gives. *)
+(** The simulated capabilities of a run's env that no device gives. *)
 
 val refused : string -> exn
 (** [refused what] is the [Eio.Io] error of an operation on [what], a capability
-    no part simulates: [Not_available]. *)
+    no device simulates: [Not_available]. *)
 
 val dir : string -> Eio.Fs.dir_ty Eio.Path.t
 (** [dir what] is a directory each operation of which raises [refused what]. *)

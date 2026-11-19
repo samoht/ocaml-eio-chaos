@@ -43,7 +43,7 @@ end
 
 let net t = Eio_chaos.Net (Eio.Resource.T (t, Eio.Net.Pi.network (module Net)))
 
-module Part = Eio_chaos.Part (struct
+module Device = Eio_chaos.Device (struct
   type nonrec t = t
 
   let name = "dns"
@@ -60,4 +60,4 @@ module Part = Eio_chaos.Part (struct
   let indeterminate _ = false
 end)
 
-let resolver () = Part.v { chaos = Eio_chaos.none }
+let resolver () = Device.v { chaos = Eio_chaos.none }

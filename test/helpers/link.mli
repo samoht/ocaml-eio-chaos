@@ -1,6 +1,6 @@
-(** A toy stream network part: links, each with two ends, [a] and [b], and what
-    one end sends the other receives. A program reaches it through the functions
-    of this module, with [env#chaos]. *)
+(** A toy stream network device: links, each with two ends, [a] and [b], and
+    what one end sends the other receives. A program reaches it through the
+    functions of this module, with [env#chaos]. *)
 
 type t
 (** The type for networks of links. *)
@@ -8,8 +8,8 @@ type t
 val v : unit -> t
 (** [v ()] is a network with no link. *)
 
-val part : t -> Eio_chaos.part
-(** [part t] is [t] as a part named ["link"]. Its operations, each of the
+val device : t -> Eio_chaos.device
+(** [device t] is [t] as a device named ["link"]. Its operations, each of the
     instance of its link, and the failures each allows:
     - ["open"] of a link: ["refused"]. Its first one in a run also proposes the
       condition ["down"], under which every open of the run is refused;

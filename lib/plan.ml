@@ -85,7 +85,7 @@ let suffix (op : Op.t) =
     String.sub target (String.length i) (String.length target - String.length i)
   else target
 
-(* Of the instances of each part, in the order the trace met them: the first
+(* Of the instances of each device, in the order the trace met them: the first
    three, the last, and the first of each shape, the kinds, details and
    length classes of the operations of each of its targets. *)
 let instances (trace : trace) =
@@ -107,11 +107,11 @@ let instances (trace : trace) =
           :: l)
       end)
     trace;
-  let parts = Hashtbl.create 4 in
+  let devices = Hashtbl.create 4 in
   List.iter
     (fun ((d, _) as k) ->
-      Hashtbl.replace parts d
-        (k :: Option.value ~default:[] (Hashtbl.find_opt parts d)))
+      Hashtbl.replace devices d
+        (k :: Option.value ~default:[] (Hashtbl.find_opt devices d)))
     !order;
   let keep = Hashtbl.create 16 in
   Hashtbl.iter
@@ -124,7 +124,7 @@ let instances (trace : trace) =
           Hashtbl.replace seen shape ();
           if j < 3 || j = n - 1 || first then Hashtbl.replace keep k ())
         ks)
-    parts;
+    devices;
   fun (op : Op.t) ->
     Op.instance op = "" || Hashtbl.mem keep (Op.device op, Op.instance op)
 
@@ -194,7 +194,7 @@ module Sure = struct
       counts = Hashtbl.create 2;
     }
 
-  (* One of the first three instances of its part. *)
+  (* One of the first three instances of its device. *)
   let instance t (op : Op.t) =
     Op.instance op = ""
     ||
@@ -665,7 +665,7 @@ module Changes = struct
 end
 
 (* The operations of [after] past [s1], where the first fault landed: if the
-   fault changed what the run changes, those that may change what a part
+   fault changed what the run changes, those that may change what a device
    keeps, then the others, each nearest the fault first; else none, and all
    of them. *)
 let aimed ~first ~(after : trace) s1 =
@@ -717,7 +717,7 @@ let both s =
 
 let at_end = Some { before = None; state = Drop }
 
-(* After each operation of [ops] that changes what a part keeps, before the
+(* After each operation of [ops] that changes what a device keeps, before the
    one that follows it in [trace]; [None] is the end. *)
 let cut_points ~changed (trace : trace) ops =
   let next = Hashtbl.create 16 in

@@ -10,11 +10,11 @@ for instance with a full disk or a connection reset. After each fault, the
 program starts again on what the fault left, as a machine restarts a
 service, and must still work.
 
-The devices, called parts, come from other packages.
+The devices come from other packages.
 [eio-fs](https://github.com/samoht/ocaml-eio-fs) gives a disk and
 [eio-net](https://github.com/samoht/ocaml-eio-net) a network. The examples
 below use a toy DNS resolver, whose
-[source](lib/toy/eio_chaos_toy.ml) is also an example of a part; it is not
+[source](lib/toy/eio_chaos_toy.ml) is also an example of a device; it is not
 installed.
 
 ## Installation
@@ -26,7 +26,7 @@ opam install eio-chaos
 
 ## Testing a program
 
-`Eio_chaos.run parts main` runs `main` with an `env` built from `parts`.
+`Eio_chaos.run devices main` runs `main` with an `env` built from `devices`.
 `main` reads `env` as it does under `Eio_main.run`, so the program does not
 change. This one looks up its database and gives up when the lookup fails:
 
@@ -44,7 +44,7 @@ Eio_chaos.run: the program failed under a fault
   error:    Failure("no database")
   trace:
     #1 lookup db  <- times out
-  replay:   Eio_chaos.run ~replay:"dns/355f1c0e/lookup:1.timeout" parts app
+  replay:   Eio_chaos.run ~replay:"dns/355f1c0e/lookup:1.timeout" devices app
 - : unit = ()
 ```
 
@@ -71,21 +71,21 @@ val lookup : Eio_chaos.env -> int -> Eio.Net.Sockaddr.stream list = <fun>
 - : unit = ()
 ```
 
-A program that uses several devices takes several parts, as
+A program that uses several devices is run on all of them, as
 `Eio_chaos.run [ Eio_fs_chaos.disk (); Eio_net_chaos.network () ] main`,
 and its runs fail the disk, the network, or both.
 
 ## Faults and restarts
 
 The first run has no fault, and records the operations the program makes on
-each part. Each later run starts from the same state and injects one or two
-faults at those operations, or cuts the power. Each part proposes only the
-faults its real device can produce at that operation, such as an error, a
+each device. Each later run starts from the same state and injects one or two
+faults at those operations, or cuts the power. Each device proposes only the
+faults the real one can produce at that operation, such as an error, a
 read that stops half-way or a disk that fills up.
-After each run, the program restarts with no fault on what the parts kept.
+After each run, the program restarts with no fault on what the devices kept.
 
 The check fails if a run hangs, if the program raises an exception the
-device cannot explain, if a part lost something the program had promised to
+device cannot explain, if a device lost something the program had promised to
 keep, or if the restart fails. An `Eio.Io` error that escapes a faulty run
 is not a failure in itself, since the device did fail: the restart decides.
 
@@ -101,15 +101,15 @@ and a long program gets a sample of its pairs rather than all of them.
 [`eio_chaos.mli`](lib/eio_chaos.mli) says how the faults are chosen, how the
 run budget is spent, and what `env` holds.
 
-## Writing a part
+## Writing a device
 
-A part is a module of type `Eio_chaos.PART`, given to `Eio_chaos.Part`. At
-each operation, the device asks `Eio_chaos.decide` whether it fails, listing
-the faults the kernel allows there, and acts out the answer. In production
-it gets `Eio_chaos.none`, which never fails anything, so the same device
-serves both. The rest of the module says how the part starts, what a power
-cut leaves, and how it restarts. The [toy resolver](lib/toy/eio_chaos_toy.ml)
-is a whole part in about 60 lines.
+A device is a module of type `Eio_chaos.DEVICE`, given to
+`Eio_chaos.Device`. At each operation, the device asks `Eio_chaos.decide`
+whether it fails, listing the faults the kernel allows there, and acts out
+the answer. In production it gets `Eio_chaos.none`, which never fails
+anything, so the same device serves both. The rest of the module says how
+the device starts, what a power cut leaves, and how it restarts. The [toy
+resolver](lib/toy/eio_chaos_toy.ml) is a whole device in about 60 lines.
 
 ## Related work
 

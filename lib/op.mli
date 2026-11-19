@@ -1,4 +1,4 @@
-(** The operations a part asks about. *)
+(** The operations a device asks about. *)
 
 (** The type for which operations of one kind on one target a check tries its
     faults at first. *)
@@ -11,8 +11,11 @@ type structure =
       (** Those that follow one the check tries first among the operations of
           that kind on the same target, or follow none. *)
 
-(** The type for whether an operation changes what a part keeps. *)
-type changes = Never | Maybe  (** Only where the part says it did. *) | Always
+(** The type for whether an operation changes what a device keeps. *)
+type changes =
+  | Never
+  | Maybe  (** Only where the device says it did. *)
+  | Always
 
 type t
 (** The type for operations. *)
@@ -34,7 +37,7 @@ val v :
     {!Every}. {!Eio_chaos.Op.v} documents them. *)
 
 val device : t -> string
-(** [device op] is the part [op] is of. *)
+(** [device op] is the name of the device of [op]. *)
 
 val kind : t -> string
 (** [kind op] is the kind of [op]. *)
@@ -58,7 +61,7 @@ val structure : t -> structure
 (** [structure op] is whether the linear tier tries [op]. *)
 
 val changes : t -> changes
-(** [changes op] is whether [op] changes what its part keeps. *)
+(** [changes op] is whether [op] changes what its device keeps. *)
 
 val pp : t Fmt.t
 (** [pp] formats an operation: its kind, its target, and its offset and length

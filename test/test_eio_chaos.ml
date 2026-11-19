@@ -1,4 +1,4 @@
-(* The runner on two toy parts, a disk and a resolver: which runs it makes,
+(* The runner on two toy devices, a disk and a resolver: which runs it makes,
    how it judges each, and the env each gets. *)
 
 module P = Eio.Path
@@ -23,13 +23,13 @@ let save env =
 
 let clean () =
   let d = Disk.v () in
-  Eio_chaos.run [ Eio_chaos.quiet (Disk.part d) ] save;
+  Eio_chaos.run [ Eio_chaos.quiet (Disk.device d) ] save;
   Alcotest.(check int) "the first run alone" 1 (List.length (Disk.runs d));
   Alcotest.(check (list bool)) "no restart" [] (Disk.restarts d)
 
 let every_fault () =
   let d = Disk.v () in
-  Eio_chaos.run [ Disk.part d ] save;
+  Eio_chaos.run [ Disk.device d ] save;
   Alcotest.(check strings)
     "each failure, condition and lone failure at each operation"
     [
@@ -50,7 +50,7 @@ let many env =
 
 let drawn seed =
   let d = Disk.v () in
-  Eio_chaos.run ~budget:2000 ~seed [ Disk.part d ] many;
+  Eio_chaos.run ~budget:2000 ~seed [ Disk.device d ] many;
   pairs (Disk.runs d)
 
 let seeded_pairs () =
@@ -63,7 +63,7 @@ let seeded_pairs () =
    budget holds it. *)
 let thinned () =
   Eio_chaos.run ~budget:200
-    [ Disk.part (Disk.v ()) ]
+    [ Disk.device (Disk.v ()) ]
     (fun env ->
       for _ = 1 to 1000 do
         try write env "k" "v" with Eio.Io _ -> ()
@@ -76,7 +76,7 @@ let early_stop () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run ~budget:100
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             for _ = 1 to 1000 do
               incr syncs;
@@ -100,7 +100,7 @@ let lasting () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             let rec save n =
               match write env "a" "1" with
@@ -118,7 +118,7 @@ let livelock () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             let rec save n =
               if n > 50_000 then failwith "the spin was not stopped";
@@ -145,7 +145,7 @@ let too_many () =
        (Expect.report (fun () ->
             Eio_chaos.run
               ~setup:(fun env -> write env "a" "1")
-              [ Disk.part (Disk.v ()) ]
+              [ Disk.device (Disk.v ()) ]
               (fun env ->
                 let n = ref 0 in
                 while read env "a" = "1" && !n < 1_000_000 do
@@ -155,7 +155,7 @@ let too_many () =
 (* A sync takes 1 ms of the run's clock, a failed one none. *)
 let op_time () =
   Eio_chaos.run
-    [ Disk.part (Disk.v ()) ]
+    [ Disk.device (Disk.v ()) ]
     (fun env ->
       let t0 = Eio.Time.Mono.now env#mono_clock in
       match sync env with
@@ -180,10 +180,10 @@ let two_writes env =
   write env "a" "done"
 
 let escaped_io () =
-  Eio_chaos.run [ Disk.part (Disk.v ()) ] (fun env -> write env "a" "1")
+  Eio_chaos.run [ Disk.device (Disk.v ()) ] (fun env -> write env "a" "1")
 
 let restart_fails ?os ?replay () =
-  Eio_chaos.run ?os ?replay [ Disk.part (Disk.v ()) ] two_writes
+  Eio_chaos.run ?os ?replay [ Disk.device (Disk.v ()) ] two_writes
 
 let restart_failed () =
   let r = Expect.report restart_fails in
@@ -202,7 +202,7 @@ let restart_hung () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             (match read env "a" with
             | "half" -> Eio.Promise.await (fst (Eio.Promise.create ()))
@@ -220,7 +220,7 @@ let other_exception () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             try write env "a" "1" with Eio.Io _ -> failwith "write failed"))
   in
@@ -232,7 +232,7 @@ let hang () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             let p, u = Eio.Promise.create () in
             (try
@@ -259,7 +259,7 @@ let replay () =
 (* A shortcut of another package names its reports and its replay line. *)
 let named () =
   let check ?replay () =
-    Eio_chaos.run ~name:"Toy.run" ?replay [ Disk.part (Disk.v ()) ] two_writes
+    Eio_chaos.run ~name:"Toy.run" ?replay [ Disk.device (Disk.v ()) ] two_writes
   in
   let r = Expect.report check in
   if not (String.starts_with ~prefix:"Toy.run: the restart failed" r) then
@@ -308,12 +308,12 @@ let over_budget_at_first () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run ~budget:1
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env -> write env "a" "1"))
   in
   if Expect.contains r "trace:" then Alcotest.failf "an empty trace: %S" r
 
-(* {1 Two parts} *)
+(* {1 Two devices} *)
 
 let both env =
   let found =
@@ -326,10 +326,10 @@ let both env =
    with Eio.Io _ when not found -> failwith "no database and no disk");
   sync env
 
-let two_parts () =
+let two_devices () =
   let d = Disk.v () and n = Dns.v () in
   let r =
-    Expect.report (fun () -> Eio_chaos.run [ Disk.part d; Dns.part n ] both)
+    Expect.report (fun () -> Eio_chaos.run [ Disk.device d; Dns.device n ] both)
   in
   Alcotest.(check strings)
     "the resolver failed"
@@ -342,10 +342,10 @@ let two_parts () =
       (String.starts_with ~prefix:"fs+net/" key
       && Expect.contains key "net:resolve:1."
       && Expect.contains key "+fs:write:1.")
-  then Alcotest.failf "not a pair across the parts: %s" r
+  then Alcotest.failf "not a pair across the devices: %s" r
 
-(* What a part says of a cut is labelled with its name once a run has two
-   parts. *)
+(* What a device says of a cut is labelled with its name once a run has two
+   devices. *)
 let cut_labelled () =
   let unsafe env =
     write env "b" "1";
@@ -354,28 +354,30 @@ let cut_labelled () =
     Disk.ack env "a"
   in
   let r =
-    Expect.report (fun () -> Eio_chaos.run [ Disk.part (Disk.v ()) ] unsafe)
+    Expect.report (fun () -> Eio_chaos.run [ Disk.device (Disk.v ()) ] unsafe)
   in
-  Alcotest.(check string) "one part" "b" (Expect.field "kept" r);
+  Alcotest.(check string) "one device" "b" (Expect.field "kept" r);
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()); Dns.part (Dns.v ()) ]
+          [ Disk.device (Disk.v ()); Dns.device (Dns.v ()) ]
           (fun env ->
             (try resolve env "db" with Eio.Io _ -> ());
             unsafe env))
   in
-  Alcotest.(check string) "two parts" "b" (Expect.field "fs kept" r);
+  Alcotest.(check string) "two devices" "b" (Expect.field "fs kept" r);
   if Expect.contains r "\n  kept:" then
     Alcotest.failf "an unlabelled line: %s" r
 
 let same_name () =
   match
     Eio_chaos.run
-      [ Disk.part (Disk.v ()); Dns.part (Dns.v ()); Disk.part (Disk.v ()) ]
+      [
+        Disk.device (Disk.v ()); Dns.device (Dns.v ()); Disk.device (Disk.v ());
+      ]
       save
   with
-  | () -> Alcotest.fail "two parts named fs"
+  | () -> Alcotest.fail "two devices named fs"
   | exception Invalid_argument _ -> ()
 
 (* {1 Power cuts} *)
@@ -389,7 +391,7 @@ let acked ~early env =
 
 let power () =
   let d = Disk.v () in
-  Eio_chaos.run [ Disk.part d ] (acked ~early:false);
+  Eio_chaos.run [ Disk.device d ] (acked ~early:false);
   let r = Disk.restarts d in
   if not (List.mem true r && List.mem false r) then
     Alcotest.fail "a restart after a power cut, and others"
@@ -398,7 +400,7 @@ let power () =
 let lost () =
   let r =
     Expect.report (fun () ->
-        Eio_chaos.run [ Disk.part (Disk.v ()) ] (acked ~early:true))
+        Eio_chaos.run [ Disk.device (Disk.v ()) ] (acked ~early:true))
   in
   Alcotest.(check string)
     "title"
@@ -415,7 +417,7 @@ let states () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             let get k = try read env k with Eio.Io _ -> "" in
             if get "a" = "1" && get "b" <> "1" then failwith "a without b";
@@ -434,7 +436,7 @@ let cut_in_restart () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             match read env "a" with
             | "tmp" ->
@@ -459,7 +461,7 @@ let cut_cancels () =
   let d = Disk.v () in
   let cut = ref false and outlived = ref false in
   Eio_chaos.run
-    [ Disk.part d ]
+    [ Disk.device d ]
     (fun env ->
       cut := false;
       Eio.Fiber.both
@@ -485,7 +487,7 @@ let printed ~seed () =
   Expect.field "output"
     (Expect.report (fun () ->
          Eio_chaos.run ~seed
-           [ Disk.part (Disk.v ()) ]
+           [ Disk.device (Disk.v ()) ]
            (fun env ->
              Eio.Flow.copy_string (hex env ^ "\n") env#stdout;
              write env "a" "1";
@@ -502,7 +504,7 @@ let entropy () =
 let clocks () =
   let starts = ref [] in
   Eio_chaos.run
-    [ Disk.part (Disk.v ()) ]
+    [ Disk.device (Disk.v ()) ]
     (fun env ->
       let t0 = Eio.Time.now env#clock in
       starts := t0 :: !starts;
@@ -519,7 +521,7 @@ let traced () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             Eio.traceln "hello";
             write env "a" "1";
@@ -528,7 +530,9 @@ let traced () =
   Alcotest.(check string) "the output" "hello" (Expect.field "output" r)
 
 let refused name f () =
-  let r = Expect.report (fun () -> Eio_chaos.run [ Disk.part (Disk.v ()) ] f) in
+  let r =
+    Expect.report (fun () -> Eio_chaos.run [ Disk.device (Disk.v ()) ] f)
+  in
   if
     not
       (String.starts_with
@@ -543,7 +547,7 @@ let process env =
 
 let domains () =
   Eio_chaos.run
-    [ Disk.part (Disk.v ()) ]
+    [ Disk.device (Disk.v ()) ]
     (fun env ->
       let n = Eio.Domain_manager.run env#domain_mgr (fun () -> 42) in
       if n <> 42 then failwith "domain";
@@ -555,7 +559,7 @@ let random () =
   let before = Random.get_state () in
   let draws = ref [] in
   Eio_chaos.run
-    [ Disk.part (Disk.v ()) ]
+    [ Disk.device (Disk.v ()) ]
     (fun env ->
       draws := Random.bits () :: !draws;
       write env "a" "1");
@@ -568,12 +572,12 @@ let random () =
 let ack_outside () =
   let kept = ref None in
   Eio_chaos.run
-    [ Eio_chaos.quiet (Disk.part (Disk.v ())) ]
+    [ Eio_chaos.quiet (Disk.device (Disk.v ())) ]
     (fun env ->
       kept := Some env;
       write env "a" "1");
   match Disk.ack (Option.get !kept) "a" with
-  | () -> Alcotest.fail "a part found after its run"
+  | () -> Alcotest.fail "a device found after its run"
   | exception Invalid_argument _ -> ()
 
 (* {1 Determinism} *)
@@ -591,7 +595,7 @@ let counter () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             incr n;
             for i = 1 to 1 + (!n mod 2) do
@@ -611,7 +615,7 @@ let names_differ () =
   let r =
     Expect.report (fun () ->
         Eio_chaos.run
-          [ Disk.part (Disk.v ()) ]
+          [ Disk.device (Disk.v ()) ]
           (fun env ->
             incr n;
             try write env (Fmt.str "k%d" !n) "v"
@@ -626,16 +630,16 @@ let bad_arguments () =
     | () -> Alcotest.failf "%s accepted" name
     | exception Invalid_argument _ -> ()
   in
-  let d () = [ Disk.part (Disk.v ()) ] in
+  let d () = [ Disk.device (Disk.v ()) ] in
   invalid "budget 0" (fun () -> Eio_chaos.run ~budget:0 (d ()) ignore);
   invalid "a replay" (fun () -> Eio_chaos.run ~replay:"nope" (d ()) ignore);
-  invalid "another part's replay" (fun () ->
+  invalid "another device's replay" (fun () ->
       Eio_chaos.run ~replay:"net/0123abcd/none" (d ()) ignore)
 
 let suite =
   ( "eio_chaos",
     [
-      Alcotest.test_case "a quiet part: the first run alone" `Quick
+      Alcotest.test_case "a quiet device: the first run alone" `Quick
         (Expect.passes clean);
       Alcotest.test_case "every failure at every operation" `Quick
         (Expect.passes every_fault);
@@ -662,9 +666,10 @@ let suite =
       Alcotest.test_case "a replay under Windows" `Quick
         (replay_under `Windows ~arg:"~os:`Windows" ~kernel:"Windows");
       Alcotest.test_case "a shortcut names its reports" `Quick named;
-      Alcotest.test_case "two parts, and a pair across them" `Quick two_parts;
-      Alcotest.test_case "a cut's lines name their part" `Quick cut_labelled;
-      Alcotest.test_case "two parts with one name" `Quick same_name;
+      Alcotest.test_case "two devices, and a pair across them" `Quick
+        two_devices;
+      Alcotest.test_case "a cut's lines name their device" `Quick cut_labelled;
+      Alcotest.test_case "two devices with one name" `Quick same_name;
       Alcotest.test_case "restart ~power" `Quick (Expect.passes power);
       Alcotest.test_case "a promise lost to a power cut" `Quick lost;
       Alcotest.test_case "the states a cut allows" `Quick states;
@@ -678,13 +683,14 @@ let suite =
       Alcotest.test_case "output and traceln are captured" `Quick traced;
       Alcotest.test_case "process_mgr is refused" `Quick
         (refused "spawn true" process);
-      Alcotest.test_case "a net no part gives is refused" `Quick
+      Alcotest.test_case "a net no device gives is refused" `Quick
         (refused "env#net" (fun env -> resolve env "db"));
       Alcotest.test_case "domain_mgr runs in the loop" `Quick
         (Expect.passes domains);
       Alcotest.test_case "Random is reset, then restored" `Quick
         (Expect.passes random);
-      Alcotest.test_case "a part is found only while it runs" `Quick ack_outside;
+      Alcotest.test_case "a device is found only while it runs" `Quick
+        ack_outside;
       Alcotest.test_case "two checks print the same" `Quick same_report;
       Alcotest.test_case "different operations are refused" `Quick counter;
       Alcotest.test_case "different names are reported" `Quick names_differ;

@@ -48,7 +48,7 @@ end
 let handler = Eio.Net.Pi.network (module Net)
 let capability t = Eio_chaos.Net (Eio.Resource.T (t, handler))
 
-module Part = struct
+module Device = struct
   type nonrec t = t
 
   let name = "net"
@@ -69,6 +69,6 @@ module Part = struct
     capability t
 end
 
-let part t =
-  let module P = Eio_chaos.Part (Part) in
+let device t =
+  let module P = Eio_chaos.Device (Device) in
   P.v t

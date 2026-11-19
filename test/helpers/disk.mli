@@ -1,4 +1,4 @@
-(** A toy disk part: names that each hold a value, written as symbolic links
+(** A toy disk device: names that each hold a value, written as symbolic links
     through [env#fs]. A write goes to a cache, and a sync of the root makes the
     cache durable. A power cut keeps what was durable, all of the cache, or what
     its draws choose, name by name. *)
@@ -9,9 +9,9 @@ type t
 val v : unit -> t
 (** [v ()] is a new disk. *)
 
-val part : t -> Eio_chaos.part
-(** [part t] is [t] as a part named ["fs"]. Its operations and the failures each
-    allows:
+val device : t -> Eio_chaos.device
+(** [device t] is [t] as a device named ["fs"]. Its operations and the failures
+    each allows:
     - [write] of a name, thinned: [eio] and [full], [full-from] as a lasting
       condition, and [eio] before a power cut;
     - [read] of a name, thinned: [eio];

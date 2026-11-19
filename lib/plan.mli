@@ -1,11 +1,11 @@
 (** The scenarios of a check, as pure functions of a recorded run. *)
 
 type pos = { device : string; kind : string; rank : int; at : int }
-(** The type for the place of an operation in a run: its part, its kind and its
-    rank among the operations of that kind of that part, on any target, and the
-    bytes into it a fault lands after, [0] at its start. Each run of a check
-    makes the same operations up to its first fault, whatever names it gives its
-    targets, so a position is found again in another run. *)
+(** The type for the place of an operation in a run: its device, its kind and
+    its rank among the operations of that kind of that device, on any target,
+    and the bytes into it a fault lands after, [0] at its start. Each run of a
+    check makes the same operations up to its first fault, whatever names it
+    gives its targets, so a position is found again in another run. *)
 
 val pos_key : single:bool -> pos -> string
 (** [pos_key ~single p] names [p] in a key: [kind:rank], after [device:] unless
@@ -14,7 +14,7 @@ val pos_key : single:bool -> pos -> string
 (** {1 Traces} *)
 
 type named = { name : string; text : string Lazy.t }
-(** The type for a fault a part allows: its name in keys, and what it does in
+(** The type for a fault a device allows: its name in keys, and what it does in
     reports. *)
 
 type allowed = {
@@ -24,9 +24,9 @@ type allowed = {
   alone : named list;
   mild : named list;
 }
-(** The type for the faults a part allows at an operation, by class. *)
+(** The type for the faults a device allows at an operation, by class. *)
 
-(** The type for the faults a part allows at an operation, in its own type. *)
+(** The type for the faults a device allows at an operation, in its own type. *)
 type faults =
   | No_faults
   | Faults : {
@@ -48,7 +48,7 @@ type step = {
   mutable places : (int * int) list;
 }
 (** The type for an operation a run made: its place in the run, from [1], its
-    rank among those of its part and kind, the faults allowed there, and the
+    rank among those of its device and kind, the faults allowed there, and the
     places inside it its {!field-once} faults may land at too: [(k, j)] is after
     [k] bytes, a place operation [j] made. *)
 
@@ -67,7 +67,7 @@ val allowed : step -> allowed
 val structural : trace -> trace * trace
 (** [structural t] is the operations of [t] a check tries first, as each one's
     {!Op.structure} says, of an instance it tries first, and the others, each in
-    order. Of the instances of each part, a check tries first the first three,
+    order. Of the instances of each device, a check tries first the first three,
     the last, and the first of each shape: the kinds, details and length classes
     of its operations, on each of its targets named past the instance. *)
 
@@ -220,7 +220,8 @@ val is_alone : scenario -> bool
     course. *)
 module Changes : sig
   type t
-  (** The type for the operations of a run that may change what a part keeps. *)
+  (** The type for the operations of a run that may change what a device keeps.
+  *)
 
   val v : trace -> t
   (** [v first] is those of [first]. *)
@@ -238,7 +239,7 @@ val seconds :
     after it in [after], the run [f] alone made, best first, at most [limit]
     (defaults to all). If [f] changed what the run changes, past [f], from
     [first], the run with no fault, they are the first list, which aims at the
-    path [f] sent the run down: the operations that may change what a part
+    path [f] sent the run down: the operations that may change what a device
     keeps, then the others, each nearest [f] first. Else they are the second
     list, drawn with [rng] as {!sample} draws them, in the order {!interleave}
     gives. *)
@@ -247,8 +248,9 @@ val seconds :
 
 val cuts : changed:(step -> bool) -> trace -> scenario list
 (** [cuts ~changed first] is a cut after each structural operation of [first]
-    that changes what a part keeps, and at its end, in both simplest states. An
-    {!Op.Always} operation changes it, another one if [changed] holds for it. *)
+    that changes what a device keeps, and at its end, in both simplest states.
+    An {!Op.Always} operation changes it, another one if [changed] holds for it.
+*)
 
 val cut_faults : trace -> scenario list
 (** [cut_faults first] is each {!field-durable} fault at each structural
@@ -275,7 +277,7 @@ val cut_seconds :
 val cut_floor : sure:bool -> changed:bool -> durable:int -> Op.t -> int
 (** [cut_floor ~sure ~changed ~durable op] is the runs the linear tier of cuts
     has for [op], given whether it is sure to be structural, whether it changed
-    what a part keeps, and how many {!field-durable} and {!field-alone} faults
+    what a device keeps, and how many {!field-durable} and {!field-alone} faults
     it has: none unless [sure]. *)
 
 (** {1 States} *)
