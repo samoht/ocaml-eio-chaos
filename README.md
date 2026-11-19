@@ -113,10 +113,14 @@ is a whole part in about 60 lines.
 
 ## Related work
 
-FoundationDB, TigerBeetle, turmoil and madsim run disk and network in one
+[FoundationDB](https://apple.github.io/foundationdb/testing.html),
+[TigerBeetle](https://docs.tigerbeetle.com/concepts/safety/),
+[turmoil](https://github.com/tokio-rs/turmoil) and
+[madsim](https://github.com/madsim-rs/madsim) run disk and network in one
 deterministic simulation with one source of choices; `Eio_chaos.decide` is
-that source here. Enumerating the states a power cut leaves follows ALICE and
-CrashMonkey.
+that source here. Enumerating the states a power cut leaves follows
+[ALICE](https://research.cs.wisc.edu/adsl/Software/alice/) and
+[CrashMonkey](https://github.com/utsaslab/crashmonkey).
 
 ## Licence
 
