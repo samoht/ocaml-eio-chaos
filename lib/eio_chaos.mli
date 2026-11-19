@@ -163,13 +163,38 @@ val run :
       parts under [os], or two of [parts] have the same name or give the same
       capability. *)
 
-val fail : name:string -> string -> 'a
-(** [fail ~name s] raises [Failure (name ^ ": " ^ s)], the report of a check
-    [name] of another package that is not a {!run}, as [Eio_fs_chaos.device].
-    The first line of [s] is the report's title, and its other lines follow as
-    they are. Left uncaught, it prints as a report of {!run} does: its lines
-    kept, its title in the colours of console's theme where the program gave
-    [Fmt.stderr] colour. Caught, [Printexc.to_string] of it is its text. *)
+(** {2:reports Reports of other checks}
+
+    A check of another package that is not a {!run}, as [Eio_fs_chaos.device],
+    raises its report as a run does. *)
+
+type difference
+(** The type for what a check found different from what it expected. *)
+
+val difference :
+  ?operations:string -> expected:string -> got:string -> string -> difference
+(** [difference ~operations ~expected ~got case] is the case [case], as
+    ["case lookup"], which ran [operations] (defaults to none, as
+    ["write a x; stat A"]) and got [got] where [expected] was expected. A value
+    may hold line feeds. *)
+
+val fail :
+  name:string -> ?differences:difference list -> ?footer:string -> string -> 'a
+(** [fail ~name ~differences ~footer title] raises [Failure] with the report of
+    the check [name]: [name ^ ": " ^ title] on its first line, then a table of
+    [differences] (defaults to none), a row each, with the columns [scenario],
+    [operations] if any has some, [expected] and [got], and then [footer]
+    (defaults to none), a summary. The cases named ["family: member"], where
+    [family] has no colon, are grouped under [family] when two or more are. The
+    report is laid out in 80 columns: a long cell or footer goes on over several
+    lines.
+
+    The text the [Failure] carries is that layout plain, in ASCII. Left
+    uncaught, it prints as a report of {!run} does: its title, the table's
+    header and what each case got in the colours of console's theme where the
+    program gave [Fmt.stderr] colour, as [Console_tty.setup ()] does on a
+    terminal, and as its text elsewhere. Caught, [Printexc.to_string] of it is
+    its text. *)
 
 (** {1:parts Writing a part}
 

@@ -1158,8 +1158,15 @@ let exec cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
 
 (* {1 Reports} *)
 
-let fail ~name s = Report.fail (Report.title name s)
-let failf cfg fmt = Fmt.kstr (fail ~name:cfg.name) fmt
+type difference = Report.difference
+
+let difference ?(operations = "") ~expected ~got case =
+  { Report.case; operations; expected; got }
+
+let fail ~name ?(differences = []) ?(footer = "") s =
+  Report.fail { (Report.title name s) with differences; footer }
+
+let failf cfg fmt = Fmt.kstr (fun s -> fail ~name:cfg.name s) fmt
 
 (* What the program printed, a line of a report, its lines set in. *)
 let output out =
@@ -1219,8 +1226,7 @@ let report cfg ~title ~hash ~key ~matched ~diverged ~(trace : record) ~out
   in
   Report.fail
     {
-      name = cfg.name;
-      title;
+      (Report.title cfg.name title) with
       fields;
       trace = steps cfg trace;
       replay = Some replay;
@@ -1242,11 +1248,9 @@ let refuse_first cfg ~(trace : record) ~out o ~budget ~what =
   in
   Report.fail
     {
-      name = cfg.name;
-      title;
+      (Report.title cfg.name title) with
       fields = [ output out ];
       trace = steps cfg trace;
-      replay = None;
     }
 
 let no_longer cfg ~hash (h, k) =

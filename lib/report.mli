@@ -8,6 +8,16 @@ type step =
       (** An operation and the fault it met, as ["times out"]. *)
   | Elided of string  (** What stands for lines left out. *)
 
+type difference = {
+  case : string;
+      (** What differs, as ["case lookup"]. Cases named ["family: member"],
+          where [family] has no colon, are grouped under [family]. *)
+  operations : string;  (** What the case ran up to there, if anything. *)
+  expected : string;
+  got : string;
+}
+(** The type for the rows of a report's table. *)
+
 type t = {
   name : string;  (** The check, as ["Eio_chaos.run"]. *)
   title : string;
@@ -15,6 +25,9 @@ type t = {
   fields : (string * string) list;
       (** Names and texts, as [("faults", "#1 lookup db times out")]. A field
           whose text is empty is left out. *)
+  differences : difference list;
+      (** A table of what differs, under the fields, if any. *)
+  footer : string;  (** A summary under the table, if not empty. *)
   trace : step list;  (** The operations of the run, if any. *)
   replay : string option;  (** The line that runs the case alone. *)
 }

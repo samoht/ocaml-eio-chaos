@@ -31,13 +31,43 @@ let coloured () =
   Alcotest.(check string) "coloured" r (printed `Ansi_tty r)
 
 (* A report of another check is [Failure] with its text, caught as a run's
-   is. *)
+   is: its table and its summary, laid out in 80 columns. *)
 let check () =
-  let s = "1 of 3 cases differs\n  case a: expected 1, got 2" in
-  match Eio_chaos.fail ~name:"Toy.check" s with
+  let d = Eio_chaos.difference in
+  let differences =
+    [
+      d ~operations:"write a x; stat A" ~expected:"file 1" ~got:"ENOENT"
+        "case lookup";
+      d ~expected:"EADDRINUSE" ~got:"ok" "hold: listen ::";
+      d ~expected:"ok ok ok ok ok ok would wait would wait accepted=6 then ok"
+        ~got:"ok ok ok Refused ok ok ok would wait accepted=6 then ok"
+        "hold: listen 127.0.0.1";
+    ]
+  in
+  match
+    Eio_chaos.fail ~name:"Toy.check" ~differences ~footer:"2 passed, 3 differed"
+      "3 of 5 cases differ"
+  with
   | () -> Alcotest.fail "fail returned"
   | exception Failure r ->
-      Alcotest.(check string) "text" ("Toy.check: " ^ s) r;
+      Alcotest.(check string)
+        "text"
+        {|Toy.check: 3 of 5 cases differ
+  scenario              operations         expected           got
+  -----------------------------------------------------------------------------
+  case lookup           write a x; stat A  file 1             ENOENT
+  hold
+  +-- listen ::                            EADDRINUSE         ok
+  +-- listen 127.0.0.1                     ok ok ok ok ok ok  ok ok ok Refused
+                                           would wait would   ok ok ok would
+                                           wait accepted=6    wait accepted=6
+                                           then ok            then ok
+  2 passed, 3 differed|}
+        r;
+      List.iter
+        (fun l ->
+          if String.length l > 80 then Alcotest.failf "wider than 80: %S" l)
+        (String.split_on_char '\n' r);
       Alcotest.(check string) "printed" r (printed `Ansi_tty r)
 
 (* A [Failure] that is no report prints as before. *)
