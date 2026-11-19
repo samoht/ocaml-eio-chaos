@@ -47,7 +47,14 @@ let lines t =
     | None -> []
     | Some r -> [ label "replay" @ [ (Replay, r) ] ]
   in
-  ([ (Name, t.name ^ ": "); (Title, t.title) ] :: List.filter_map field t.fields)
+  let title, more =
+    match String.split_on_char '\n' t.title with
+    | first :: more -> (first, more)
+    | [] -> (t.title, [])
+  in
+  [ (Name, t.name ^ ": "); (Title, title) ]
+  :: List.map (fun l -> [ (Text, l) ]) more
+  @ List.filter_map field t.fields
   @ trace @ replay
 
 let to_string t =

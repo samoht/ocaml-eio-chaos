@@ -163,6 +163,14 @@ val run :
       parts under [os], or two of [parts] have the same name or give the same
       capability. *)
 
+val fail : name:string -> string -> 'a
+(** [fail ~name s] raises [Failure (name ^ ": " ^ s)], the report of a check
+    [name] of another package that is not a {!run}, as [Eio_fs_chaos.device].
+    The first line of [s] is the report's title, and its other lines follow as
+    they are. Left uncaught, it prints as a report of {!run} does: its lines
+    kept, its title in the colours of console's theme where the program gave
+    [Fmt.stderr] colour. Caught, [Printexc.to_string] of it is its text. *)
+
 (** {1:parts Writing a part}
 
     A part is a module of type {!PART}, given to {!Part}. At each operation it

@@ -1158,7 +1158,8 @@ let exec cfg ~pass ?cap ?budget ?against ~first (s : Plan.scenario) =
 
 (* {1 Reports} *)
 
-let fail cfg fmt = Fmt.kstr (fun s -> Report.fail (Report.title cfg.name s)) fmt
+let fail ~name s = Report.fail (Report.title name s)
+let failf cfg fmt = Fmt.kstr (fail ~name:cfg.name) fmt
 
 (* What the program printed, a line of a report, its lines set in. *)
 let output out =
@@ -1250,9 +1251,9 @@ let refuse_first cfg ~(trace : record) ~out o ~budget ~what =
 
 let no_longer cfg ~hash (h, k) =
   if h = hash then
-    fail cfg "the replay names %s, a scenario this check no longer has" k
+    failf cfg "the replay names %s, a scenario this check no longer has" k
   else
-    fail cfg
+    failf cfg
       "the replay names %s, a scenario this check no longer has: its first run \
        was %s and is now %s. Run the check without ~replay."
       k h hash
@@ -1269,7 +1270,7 @@ let diverge cfg (r : record) =
   let d = Option.get r.diff in
   match kinds_differ d with
   | Some (x, y) ->
-      fail cfg
+      failf cfg
         "two runs with no fault made different operations: %s in the first, %s \
          in the second. A check aims each fault at an operation by its kind \
          and its place in the run, so it cannot aim them here. The program \
@@ -1380,7 +1381,7 @@ let run_tiers cfg ~budget ~rng ~changes ~first ~attempt linear =
     List.length (List.filter (fun s -> not (Plan.is_alone s)) linear)
   in
   if n > budget then
-    fail cfg
+    failf cfg
       "the linear tier needs %d runs, more than the budget of %d, and a check \
        never passes on a partial one. Shrink the program, or raise ~budget."
       n budget;
@@ -1475,7 +1476,7 @@ let check_errors cfg ~budget ~replay =
   (* With every part quiet, or none, the check is the first run alone. *)
   let loud = List.exists (fun (Part p) -> not p.quiet) cfg.parts in
   if first = [] && loud then
-    fail cfg "the program makes no %s, so it tests nothing" cfg.noun;
+    failf cfg "the program makes no %s, so it tests nothing" cfg.noun;
   let some = candidates first in
   if some || replay <> None then errors cfg ~budget ~replay first;
   some
@@ -1614,7 +1615,7 @@ let replay_cut p ((h, k) as r) =
       no_longer cfg ~hash:p.hash r
   | Some { cut = Some { state = Seed n; _ }; _ } when n >= p.budget / 4 ->
       let need = 4 * (n + 1) in
-      fail cfg
+      failf cfg
         "the replay names %s, a state drawn at random under a budget of %d or \
          more: pass ~budget:%d."
         k need need
@@ -1722,7 +1723,7 @@ let cut_tiers p =
   let cfg = p.ccfg and rng = p.rng in
   let linear = List.length p.cuts + List.length p.faults in
   if linear > p.budget then
-    fail cfg
+    failf cfg
       "the linear tier needs %d runs, more than the budget of %d, and a check \
        never passes on a partial one. Shrink the program, or raise ~budget."
       linear p.budget;
@@ -1816,14 +1817,14 @@ let check_cuts cfg ~budget ~replay =
   | _ -> ());
   let first_ops = kept first.trace in
   if first_ops = [] then
-    fail cfg "the program makes no %s, so it tests nothing" cfg.noun;
+    failf cfg "the program makes no %s, so it tests nothing" cfg.noun;
   let p, reads = cuts_plan cfg ~budget first first_ops in
   match replay with
   | Some r -> replay_cut p r
   | None ->
       cut_tiers p;
       if not !reads then
-        fail cfg
+        failf cfg
           "the restart makes no %s in any run, so it checks nothing a cut \
            leaves"
           cfg.noun

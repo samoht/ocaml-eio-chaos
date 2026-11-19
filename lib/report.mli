@@ -10,7 +10,8 @@ type step =
 
 type t = {
   name : string;  (** The check, as ["Eio_chaos.run"]. *)
-  title : string;  (** What failed. *)
+  title : string;
+      (** What failed: its first line, then any other lines as they are. *)
   fields : (string * string) list;
       (** Names and texts, as [("faults", "#1 lookup db times out")]. A field
           whose text is empty is left out. *)
@@ -29,10 +30,10 @@ val to_string : t -> string
 
 val pp : t Fmt.t
 (** [pp] formats a report: its text, as {!to_string} gives it, in the parts of
-    the formatter's theme, which show iff its styles are on. The title is bold,
-    in the colour of a failure; the names are muted; a faulted operation is bold
-    and its fault in the colour of a warning; the replay line is bold, in the
-    accent colour. *)
+    the formatter's theme, which show iff its styles are on. The first line of
+    the title is bold, in the colour of a failure, and its other lines are
+    plain; the names are muted; a faulted operation is bold and its fault in the
+    colour of a warning; the replay line is bold, in the accent colour. *)
 
 val fail : t -> 'a
 (** [fail t] raises [Failure (to_string t)]. Left uncaught, that exception

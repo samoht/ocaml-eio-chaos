@@ -38,3 +38,18 @@ NO_COLOR and TERM=dumb print it plain there too.
     trace:
       #1 lookup db  <- times out
     replay:   Eio_chaos.run ~replay:"dns/355f1c0e/lookup:1.timeout" parts app
+
+A check of another package raises its report with Eio_chaos.fail: it
+prints as a run's does, its lines kept, and only the title's first line in
+the colour of a failure.
+
+  $ ./check.exe
+  Fatal error: exception Toy.check: 1 of 3 cases differs
+    case a: expected 1, got 2
+    2 passed, 1 differed
+  [2]
+
+  $ CONSOLE_CAST=/dev/null TERM=xterm ./check.exe 2>&1 | cat -v
+  Fatal error: exception ^[[1mToy.check: ^[[0m^[[1;31m1 of 3 cases differs^[[0m
+    case a: expected 1, got 2
+    2 passed, 1 differed
