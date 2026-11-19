@@ -54,7 +54,7 @@ let check () =
         "text"
         {|Toy.check: 3 of 5 cases differ
   scenario              operations         expected           got
-  -----------------------------------------------------------------------------
+  ----------------------------------------------------------------------------
   case lookup           write a x; stat A  file 1             ENOENT
   hold
   +-- listen ::                            EADDRINUSE         ok
@@ -70,6 +70,77 @@ let check () =
         (String.split_on_char '\n' r);
       Alcotest.(check string) "printed" r (printed `Ansi_tty r)
 
+(* The text of the report of [differences]. *)
+let text differences =
+  match Eio_chaos.fail ~name:"Toy.check" ~differences "some cases differ" with
+  | () -> Alcotest.fail "fail returned"
+  | exception Failure r -> r
+
+(* A cell of operations breaks between two of them: no operation is split
+   while its column holds it, and no column is wider than the lines its
+   cells break into. *)
+let operations () =
+  let d = Eio_chaos.difference in
+  let r =
+    text
+      [
+        d ~operations:"write a x; open A x" ~expected:"EEXIST" ~got:"ok"
+          "case exclusive create";
+        d ~operations:"write a x; rename a A; ls .; read a" ~expected:"x"
+          ~got:"ENOENT" "case rename";
+        d ~operations:"mkdir d; mkdir d; mkdir d/; write f x; mkdir f; mkdir f/"
+          ~expected:"ENOTDIR" ~got:"EEXIST *" "mkdir exists";
+        d ~operations:"symlink t/ l; open l c" ~expected:"ENOENT" ~got:"EISDIR"
+          "open dangling slash link";
+        d ~operations:"write f x; read f" ~expected:"x"
+          ~got:"exn Failure(\"no such file\")" "read back";
+      ]
+  in
+  Alcotest.(check string)
+    "text"
+    {|Toy.check: some cases differ
+  scenario                  operations            expected  got
+  ------------------------------------------------------------------------------
+  case exclusive create     write a x; open A x   EEXIST    ok
+  case rename               write a x;            x         ENOENT
+                            rename a A; ls .;
+                            read a
+  mkdir exists              mkdir d; mkdir d;     ENOTDIR   EEXIST *
+                            mkdir d/; write f x;
+                            mkdir f; mkdir f/
+  open dangling slash link  symlink t/ l;         ENOENT    EISDIR
+                            open l c
+  read back                 write f x; read f     x         exn Failure("no such
+                                                            file")|}
+    r
+
+(* Names in UTF-8 take the cells a terminal draws them in: the columns line
+   up after an accented letter, a decomposed one and the Kelvin sign. *)
+let utf_8 () =
+  let d = Eio_chaos.difference in
+  let r =
+    text
+      [
+        d ~operations:"write \xc3\xa9 x; stat \xc3\x89" ~expected:"file 1"
+          ~got:"ENOENT" "case non-ascii";
+        d ~operations:"write k x; stat \xe2\x84\xaa" ~expected:"file 1"
+          ~got:"ENOENT" "case kelvin";
+        d ~operations:"write e\xcc\x81 x; write \xc3\xa9 y; ls ."
+          ~expected:"[e\xcc\x81]" ~got:"[e\xcc\x81/\xc3\xa9]" "nfd create";
+      ]
+  in
+  Alcotest.(check string)
+    "text"
+    "Toy.check: some cases differ\n\
+    \  scenario        operations                  expected  got\n\
+    \  ------------------------------------------------------------\n\
+    \  case non-ascii  write \xc3\xa9 x; stat \xc3\x89           file 1    \
+     ENOENT\n\
+    \  case kelvin     write k x; stat \xe2\x84\xaa           file 1    ENOENT\n\
+    \  nfd create      write e\xcc\x81 x; write \xc3\xa9 y; ls .  \
+     [e\xcc\x81]       [e\xcc\x81/\xc3\xa9]"
+    r
+
 (* A [Failure] that is no report prints as before. *)
 let other () =
   Alcotest.(check string) "other" "Failure(\"x\")" (printed `Ansi_tty "x")
@@ -80,5 +151,7 @@ let suite =
       Alcotest.test_case "its text without colour" `Quick plain;
       Alcotest.test_case "its text with colour" `Quick coloured;
       Alcotest.test_case "another check's" `Quick check;
+      Alcotest.test_case "its operations whole" `Quick operations;
+      Alcotest.test_case "its names in UTF-8" `Quick utf_8;
       Alcotest.test_case "another Failure" `Quick other;
     ] )

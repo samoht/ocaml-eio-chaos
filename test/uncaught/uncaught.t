@@ -17,20 +17,18 @@ laid out in 80 columns.
 
   $ ./check.exe
   Fatal error: exception Toy.check: 4 of 5 cases differ from Linux
-    scenario                  operations        expected          got
-    ------------------------------------------------------------------------------
-    case lookup               write a x; stat   file 1            ENOENT
-                              A
+    scenario                  operations           expected        got
+    ----------------------------------------------------------------------------
+    case lookup               write a x; stat A    file 1          ENOENT
     dual-stack hold
-    +-- listen :: client ::1  tcp4 bind;        EADDRINUSE        ok
-    |   server closes first   listen; close
-    +-- listen :: client      tcp6 bind;        ok ok ok ok ok    ok ok ok Refused
-        127.0.0.1 server      listen            ok would wait     ok ok ok would
-        closes first                            would wait        wait accepted=6
-                                                accepted=6 then   then ok
-                                                ok
-    failed connect: path      unix-stream       Not_found         Refused
-                              connect
+    +-- listen :: client ::1  tcp4 bind; listen;   EADDRINUSE      ok
+    |   server closes first   close
+    +-- listen :: client      tcp6 bind; listen    ok ok ok ok ok  ok ok ok
+        127.0.0.1 server                           ok would wait   Refused ok ok
+        closes first                               would wait      ok would wait
+                                                   accepted=6      accepted=6
+                                                   then ok         then ok
+    failed connect: path      unix-stream connect  Not_found       Refused
     1 passed, 4 differed, 132 left out: 13 that wait 60 seconds for a port to be
     free again, 5 that use up every port, 114 that send off the loopback interface
   [2]
