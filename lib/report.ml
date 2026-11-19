@@ -366,7 +366,48 @@ let footer s width =
   in
   View.vcat (List.map (View.role `Muted) lines)
 
+(* [s] with each CRLF and each lone CR a line feed: a CR is no line end
+   to console, and on a terminal it would draw over the line. *)
+let lf s =
+  if not (String.contains s '\r') then s
+  else
+    let b = Buffer.create (String.length s) in
+    String.iteri
+      (fun i c ->
+        match c with
+        | '\r' when i + 1 < String.length s && s.[i + 1] = '\n' -> ()
+        | '\r' -> Buffer.add_char b '\n'
+        | c -> Buffer.add_char b c)
+      s;
+    Buffer.contents b
+
+(* [t] with the line ends of {!lf}. *)
+let line_ends t =
+  let step = function
+    | Op s -> Op (lf s)
+    | Fault (s, f) -> Fault (lf s, lf f)
+    | Elided s -> Elided (lf s)
+  in
+  let difference d =
+    {
+      case = lf d.case;
+      operations = lf d.operations;
+      expected = lf d.expected;
+      got = lf d.got;
+    }
+  in
+  {
+    name = lf t.name;
+    title = lf t.title;
+    fields = List.map (fun (k, v) -> (lf k, lf v)) t.fields;
+    differences = List.map difference t.differences;
+    footer = lf t.footer;
+    trace = List.map step t.trace;
+    replay = Option.map lf t.replay;
+  }
+
 let view t =
+  let t = line_ends t in
   let head, tail = lines t in
   View.vcat
     (List.map line head

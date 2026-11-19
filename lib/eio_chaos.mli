@@ -154,10 +154,12 @@ val run :
       paste that runs it alone, as
       [Eio_chaos.run ~replay:"fs+net/85d85f49/fs:write:1.eio" parts app]. The
       line passes [~os:`Macos] for a run under macOS, or [~os:`Windows] under
-      Windows, whose replay string names the kernel. Left uncaught, the report
-      prints in the colours of console's theme where the program gave
-      [Fmt.stderr] colour, as [Console_tty.setup ()] does on a terminal, and as
-      its text elsewhere. Caught, [Printexc.to_string] of it is its text.
+      Windows, whose replay string names the kernel. A CRLF or a lone CR in the
+      report, as in an error's message on Windows, is a line feed. Left
+      uncaught, the report prints in the colours of console's theme where the
+      program gave [Fmt.stderr] colour, as [Console_tty.setup ()] does on a
+      terminal, and as its text elsewhere. Caught, [Printexc.to_string] of it is
+      its text.
     @raise Invalid_argument
       if [budget] is not positive, [replay] is not a replay string of these
       parts under [os], or two of [parts] have the same name or give the same
@@ -192,11 +194,11 @@ val fail :
     terminal draws them in.
 
     The text the [Failure] carries is that layout plain, its rules and guides in
-    ASCII. Left uncaught, it prints as a report of {!run} does: its title, the
-    table's header and what each case got in the colours of console's theme
-    where the program gave [Fmt.stderr] colour, as [Console_tty.setup ()] does
-    on a terminal, and as its text elsewhere. Caught, [Printexc.to_string] of it
-    is its text. *)
+    ASCII, and a CRLF or a lone CR in it a line feed. Left uncaught, it prints
+    as a report of {!run} does: its title, the table's header and what each case
+    got in the colours of console's theme where the program gave [Fmt.stderr]
+    colour, as [Console_tty.setup ()] does on a terminal, and as its text
+    elsewhere. Caught, [Printexc.to_string] of it is its text. *)
 
 (** {1:parts Writing a part}
 
