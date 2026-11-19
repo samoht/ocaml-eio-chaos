@@ -2,5 +2,10 @@
  (names fail check)
  (libraries eio-chaos eio_chaos_toy eio console.tty))
 
+(env
+ (_
+  (env-vars
+   (NO_COLOR 1))))
+
 (cram
  (deps fail.exe check.exe))
