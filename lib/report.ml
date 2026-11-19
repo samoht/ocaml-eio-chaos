@@ -133,11 +133,53 @@ let groups ds =
   in
   go [] ds
 
-let widest_word s =
-  List.fold_left
-    (fun w x -> max w (String.length x))
-    0
-    (String.split_on_char ' ' s)
+(* The cells a terminal draws [s] in. *)
+let cells s = View.width (View.text s)
+let widest f l = List.fold_left (fun w x -> max w (f x)) 0 l
+let widest_word s = widest cells (String.split_on_char ' ' s)
+
+(* The operations of a line of a sequence, each but the last with its
+   [";"]. *)
+let steps l =
+  let n = String.length l in
+  let rec go acc start i =
+    if i + 1 >= n then List.rev (String.sub l start (n - start) :: acc)
+    else if l.[i] = ';' && l.[i + 1] = ' ' then
+      go (String.sub l start (i + 1 - start) :: acc) (i + 2) (i + 2)
+    else go acc start (i + 1)
+  in
+  go [] 0 0
+
+(* The lines of [s] in [w] cells, broken at its spaces; if [seq], between
+   two operations before inside one. *)
+let broken ~seq w s =
+  let pack l =
+    let flush line acc =
+      match line with None -> acc | Some l -> View.text l :: acc
+    in
+    let rec go acc line = function
+      | [] -> List.rev (flush line acc)
+      | op :: rest -> (
+          match line with
+          | Some l when cells (l ^ " " ^ op) <= w ->
+              go acc (Some (l ^ " " ^ op)) rest
+          | _ ->
+              let acc = flush line acc in
+              if cells op <= w then go acc (Some op) rest
+              else
+                go (List.rev_append (View.wrap w (View.text op)) acc) None rest)
+    in
+    go [] None (steps l)
+  in
+  if seq then List.concat_map pack (String.split_on_char '\n' s)
+  else View.wrap w (View.text s)
+
+(* A sequence of operations, in the lines of {!broken}. *)
+let sequence s =
+  View.fit ~min_width:(widest_word s) (fun room ->
+      match Room.width room with
+      | Some w -> View.vcat (broken ~seq:true w s)
+      | None -> View.text s)
 
 (* The cell of a member of a family: the theme's guide, then its name, its
    lines set in after the guide. *)
@@ -147,7 +189,7 @@ let member ~last name =
     if last then (Guide.last g, Guide.space g)
     else (Guide.branch g, Guide.pipe g)
   in
-  let width = String.length (Guide.branch Guide.ascii) in
+  let width = cells (Guide.branch Guide.ascii) in
   View.fit
     ~min_width:(width + widest_word name)
     (fun room ->
@@ -156,41 +198,14 @@ let member ~last name =
       let glyph s = View.role `Muted (View.text s) in
       let lines =
         match Room.width room with
-        | Some w when w > View.width (View.text first) ->
-            View.wrap (w - View.width (View.text first)) (View.text name)
+        | Some w when w > cells first ->
+            View.wrap (w - cells first) (View.text name)
         | _ -> [ View.text name ]
       in
       View.vcat
         (List.mapi
            (fun i l -> View.(glyph (if i = 0 then first else next) ++ l))
            lines))
-
-(* The widest line of [s]. *)
-let natural s =
-  List.fold_left
-    (fun w l -> max w (View.width (View.text l)))
-    0
-    (String.split_on_char '\n' s)
-
-(* Widths for columns of natural widths [ns] in [room] cells: each its
-   natural width if all fit, else the narrow ones theirs and the others an
-   equal share of what is left. *)
-let shares room ns =
-  let rec go room ns =
-    let wide = List.filter (fun n -> n > 0) ns in
-    match wide with
-    | [] -> ns
-    | _ ->
-        let share = max 1 (room / List.length wide) in
-        if List.for_all (fun n -> n > share) wide then
-          List.map (fun n -> if n > 0 then share else 0) ns
-        else
-          let fixed = List.filter (fun n -> n > 0 && n <= share) ns in
-          let left = room - List.fold_left ( + ) 0 fixed in
-          let rest = List.map (fun n -> if n <= share then 0 else n) ns in
-          List.map2 (fun n r -> if r = 0 then n else r) ns (go left rest)
-  in
-  if List.fold_left ( + ) 0 ns <= room then ns else go room ns
 
 let gap = 2
 
@@ -209,33 +224,117 @@ let warned s =
 let texts ~ops d =
   (if ops then [ d.operations ] else []) @ [ d.expected; d.got ]
 
-(* The natural widths of the columns of [groups] under [heads]: the first
-   that of the widest case, a member after its guide. *)
-let naturals ~ops heads groups ds =
-  let guide = String.length (Guide.branch Guide.ascii) in
-  let first =
-    List.fold_left
-      (fun w (family, members) ->
-        let g = if family = None then 0 else guide in
-        List.fold_left (fun w (m, _) -> max w (g + natural m)) w members)
-      (String.length (List.hd heads))
+(* A cell as the widths count it: its text set in by [indent] cells, a
+   sequence of operations if [seq]. *)
+type cell = { indent : int; text : string; seq : bool }
+
+(* The cells [c] takes at its natural size, and in a column [w] wide. *)
+let natural c = c.indent + widest cells (String.split_on_char '\n' c.text)
+
+let laid w c =
+  if w <= c.indent then natural c
+  else c.indent + widest View.width (broken ~seq:c.seq (w - c.indent) c.text)
+
+(* The widest part of [c] that a break would split: an operation, or a
+   word. *)
+let piece c =
+  let lines = String.split_on_char '\n' c.text in
+  let split = if c.seq then steps else String.split_on_char ' ' in
+  c.indent + widest cells (List.concat_map split lines)
+
+let sum = List.fold_left ( + ) 0
+
+(* Widths for columns of natural widths [ns] in [room] cells, each at least
+   its floor in [fs]: each [min n (max f l)] at the highest level [l] that
+   fits, then a cell each to the columns still short of their natural width
+   while some are left, in [order]. *)
+let fill room ns fs order =
+  let at l = List.map2 (fun n f -> min n (max f l)) ns fs in
+  let top = widest Fun.id ns in
+  let rec level l =
+    if l < top && sum (at (l + 1)) <= room then level (l + 1) else l
+  in
+  let ws = Array.of_list (at (level 0)) and ns = Array.of_list ns in
+  let left = ref (room - Array.fold_left ( + ) 0 ws) in
+  List.iter
+    (fun i ->
+      if !left > 0 && ws.(i) < ns.(i) then (
+        ws.(i) <- ws.(i) + 1;
+        decr left))
+    order;
+  Array.to_list ws
+
+(* The widths of columns of cells [cols] in [room] cells: their natural
+   widths if they fit. Else each keeps its widest piece whole while the
+   pieces fit, the first column a third of the room too, and they share
+   the rest evenly, none wider than its natural width, a cell left over
+   going to the column [first] first. Each then narrows to the widest line
+   its cells break into. *)
+let widths ~first room cols =
+  let ns = List.map (widest natural) cols in
+  if sum ns <= room then ns
+  else
+    let order =
+      first :: List.filter (( <> ) first) (List.init (List.length cols) Fun.id)
+    in
+    let fs =
+      List.mapi
+        (fun i (n, col) ->
+          min n (max (widest piece col) (if i = 0 then room / 3 else 0)))
+        (List.combine ns cols)
+    in
+    let fs = if sum fs <= room then fs else List.map (min 1) ns in
+    List.map2
+      (fun w col -> min w (widest (laid w) col))
+      (fill room ns fs order) cols
+
+(* The rows of a table of [groups], each family under its name. *)
+let rows ~ops groups =
+  let row case d =
+    let texts = texts ~ops d in
+    let n = List.length texts in
+    case
+    :: List.mapi
+         (fun i s ->
+           if i = n - 1 then warned s
+           else if ops && i = 0 then sequence s
+           else View.text s)
+         texts
+  in
+  List.concat_map
+    (function
+      | None, members -> List.map (fun (m, d) -> row (View.text m) d) members
+      | Some f, members ->
+          let n = List.length members in
+          [ View.styled Style.bold (View.text f) ]
+          :: List.mapi
+               (fun i (m, d) -> row (member ~last:(i = n - 1) m) d)
+               members)
+    groups
+
+(* The cells of each column of a table of [groups] under [heads], as the
+   widths count them. *)
+let columns ~ops heads groups ds =
+  let cell ?(indent = 0) ?(seq = false) text = { indent; text; seq } in
+  let guide = cells (Guide.branch Guide.ascii) in
+  let cases =
+    List.concat_map
+      (function
+        | None, members -> List.map (fun (m, _) -> cell m) members
+        | Some f, members ->
+            cell f :: List.map (fun (m, _) -> cell ~indent:guide m) members)
       groups
   in
-  first
-  :: List.fold_left
-       (fun ws d -> List.map2 (fun w s -> max w (natural s)) ws (texts ~ops d))
-       (List.map String.length (List.tl heads))
-       ds
-
-(* The widths of the columns in [width] cells: the cases at most a third,
-   the others their shares of what is left. *)
-let widths width ns =
-  match (width, ns) with
-  | None, _ | _, [] -> ns
-  | Some w, first :: others ->
-      let room = w - (gap * (List.length ns - 1)) in
-      let first = min first (room / 3) in
-      first :: shares (room - first) others
+  let others =
+    List.mapi
+      (fun i h ->
+        cell h
+        :: List.map
+             (fun d -> cell ~seq:(ops && i = 0) (List.nth (texts ~ops d) i))
+             ds)
+      (List.tl heads)
+  in
+  (cell (List.hd heads) :: cases) :: others
 
 let table ds width =
   let ops = List.exists (fun d -> d.operations <> "") ds in
@@ -244,34 +343,20 @@ let table ds width =
     "scenario"
     :: ((if ops then [ "operations" ] else []) @ [ "expected"; "got" ])
   in
-  let cells case d =
-    let texts = texts ~ops d in
-    case
-    :: List.mapi
-         (fun i s ->
-           if i = List.length texts - 1 then warned s else View.text s)
-         texts
-  in
-  let rows =
-    List.concat_map
-      (function
-        | None, members ->
-            List.map (fun (m, d) -> cells (View.text m) d) members
-        | Some f, members ->
-            let n = List.length members in
-            [ View.styled Style.bold (View.text f) ]
-            :: List.mapi
-                 (fun i (m, d) -> cells (member ~last:(i = n - 1) m) d)
-                 members)
-      groups
+  let cols = columns ~ops heads groups ds in
+  let ws =
+    match width with
+    | None -> List.map (widest natural) cols
+    | Some w ->
+        let room = w - (gap * (List.length cols - 1)) in
+        widths ~first:(if ops then 1 else 0) room cols
   in
   let columns =
     List.map2
       (fun h w -> Table.column ~width:w ~max_width:w (View.text h))
-      heads
-      (widths width (naturals ~ops heads groups ds))
+      heads ws
   in
-  Table.view ~border:Border.simple ~gap columns rows
+  Table.view ~border:Border.simple ~gap columns (rows ~ops groups)
 
 let footer s width =
   let lines =

@@ -12,7 +12,9 @@ type difference = {
   case : string;
       (** What differs, as ["case lookup"]. Cases named ["family: member"],
           where [family] has no colon, are grouped under [family]. *)
-  operations : string;  (** What the case ran up to there, if anything. *)
+  operations : string;
+      (** What the case ran up to there, if anything: operations separated by
+          ["; "], which a cell breaks between before it breaks inside one. *)
   expected : string;
   got : string;
 }

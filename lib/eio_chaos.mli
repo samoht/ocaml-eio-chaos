@@ -176,7 +176,8 @@ val difference :
 (** [difference ~operations ~expected ~got case] is the case [case], as
     ["case lookup"], which ran [operations] (defaults to none, as
     ["write a x; stat A"]) and got [got] where [expected] was expected. A value
-    may hold line feeds. *)
+    may hold line feeds. A cell of [operations] breaks after a ["; "] before it
+    breaks inside an operation. *)
 
 val fail :
   name:string -> ?differences:difference list -> ?footer:string -> string -> 'a
@@ -187,14 +188,15 @@ val fail :
     (defaults to none), a summary. The cases named ["family: member"], where
     [family] has no colon, are grouped under [family] when two or more are. The
     report is laid out in 80 columns: a long cell or footer goes on over several
-    lines.
+    lines, and no column is wider than its cells need, counted in the cells a
+    terminal draws them in.
 
-    The text the [Failure] carries is that layout plain, in ASCII. Left
-    uncaught, it prints as a report of {!run} does: its title, the table's
-    header and what each case got in the colours of console's theme where the
-    program gave [Fmt.stderr] colour, as [Console_tty.setup ()] does on a
-    terminal, and as its text elsewhere. Caught, [Printexc.to_string] of it is
-    its text. *)
+    The text the [Failure] carries is that layout plain, its rules and guides in
+    ASCII. Left uncaught, it prints as a report of {!run} does: its title, the
+    table's header and what each case got in the colours of console's theme
+    where the program gave [Fmt.stderr] colour, as [Console_tty.setup ()] does
+    on a terminal, and as its text elsewhere. Caught, [Printexc.to_string] of it
+    is its text. *)
 
 (** {1:parts Writing a part}
 
