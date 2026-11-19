@@ -141,6 +141,38 @@ let utf_8 () =
      [e\xcc\x81]       [e\xcc\x81/\xc3\xa9]"
     r
 
+(* An error whose text ends its lines with CRLF, as Windows'
+   [Unix.error_message] does. *)
+exception Crlf
+
+let () =
+  Printexc.register_printer (function
+    | Crlf -> Some "first line\r\nsecond line"
+    | _ -> None)
+
+(* A CR in a report's text is a line end, CRLF one line end: its text has
+   no CR and no blank line for one. *)
+let crlf () =
+  let r =
+    Expect.report (fun () ->
+        Eio_chaos.run
+          [ Eio_chaos_toy.resolver () ]
+          (fun env ->
+            (try ignore (Eio.Net.getaddrinfo_stream env#net "db")
+             with Eio.Io _ -> ());
+            raise Crlf))
+  in
+  Alcotest.(check string)
+    "title" "Eio_chaos.run: the run with no fault failed: first line"
+    (Expect.title r);
+  if String.contains r '\r' then Alcotest.failf "a CR in %S" r;
+  if not (Expect.contains r "first line\nsecond line") then
+    Alcotest.failf "not one line end in %S" r;
+  match Eio_chaos.fail ~name:"Toy.check" "a\r\nb\rc" with
+  | () -> Alcotest.fail "fail returned"
+  | exception Failure r ->
+      Alcotest.(check string) "lone CR" "Toy.check: a\nb\nc" r
+
 (* A [Failure] that is no report prints as before. *)
 let other () =
   Alcotest.(check string) "other" "Failure(\"x\")" (printed `Ansi_tty "x")
@@ -153,5 +185,6 @@ let suite =
       Alcotest.test_case "another check's" `Quick check;
       Alcotest.test_case "its operations whole" `Quick operations;
       Alcotest.test_case "its names in UTF-8" `Quick utf_8;
+      Alcotest.test_case "its line ends" `Quick crlf;
       Alcotest.test_case "another Failure" `Quick other;
     ] )
