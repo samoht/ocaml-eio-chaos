@@ -40,7 +40,3 @@ val fail : t -> 'a
     prints as {!val-pp} does where the program gave [Fmt.stderr] colour, as
     [Console_tty.setup ()] does on a terminal, and as its text elsewhere.
     Caught, [Printexc.to_string] of it is its text. *)
-
-val reporting : string -> unit
-(** [reporting name] makes a [Failure] whose text starts with [name ^ ": "]
-    print as that text, its lines kept, though {!fail} did not raise it. *)

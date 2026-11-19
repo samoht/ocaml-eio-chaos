@@ -1895,7 +1895,6 @@ let run_named ~name ~args ?(passes = [ Errors; Cuts ]) ?os ?budget ?(seed = 0)
     | Some b -> b
   in
   check_parts name parts;
-  Report.reporting name;
   let names = String.concat "+" (List.map part_name parts) in
   let single, noun =
     match parts with

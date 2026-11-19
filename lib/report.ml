@@ -116,27 +116,9 @@ let styled t =
       Fmt.pf ppf "%a@?" pp t;
       Some (Buffer.contents b)
 
-let reporters = Atomic.make []
-
-let reporting name =
-  let p = name ^ ": " in
-  let rec add () =
-    let l = Atomic.get reporters in
-    if not (List.mem p l || Atomic.compare_and_set reporters l (p :: l)) then
-      add ()
-  in
-  add ()
-
 let () =
   Printexc.register_printer (function
-    | Failure m -> (
-        match Mutex.protect lock (fun () -> Raised.find_opt raised m) with
-        | Some t -> Some (Option.value (styled t) ~default:m)
-        | None ->
-            if
-              List.exists
-                (fun prefix -> String.starts_with ~prefix m)
-                (Atomic.get reporters)
-            then Some m
-            else None)
+    | Failure m ->
+        Mutex.protect lock (fun () -> Raised.find_opt raised m)
+        |> Option.map (fun t -> Option.value (styled t) ~default:m)
     | _ -> None)
