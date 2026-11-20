@@ -152,6 +152,21 @@ let too_many () =
                   incr n
                 done))))
 
+(* A first run stopped at the budget leaves a device's mutex unlocked:
+   decide does not suspend, even at a limit. *)
+let unlocked_at_limit () =
+  let n = Dns.v () in
+  let r =
+    Expect.report (fun () ->
+        Eio_chaos.run [ Dns.device n ] (fun env ->
+            for _ = 1 to 1_000_000 do
+              resolve env "db"
+            done))
+  in
+  if not (Expect.contains r "which stopped there") then
+    Alcotest.failf "the first run did not stop at the budget: %s" r;
+  if Dns.locked n then Alcotest.fail "the device's mutex is still locked"
+
 (* A sync takes 1 ms of the run's clock, a failed one none. *)
 let op_time () =
   Eio_chaos.run
@@ -651,6 +666,8 @@ let suite =
       Alcotest.test_case "a lasting condition outlasts retries" `Quick lasting;
       Alcotest.test_case "a retry with no pause hangs" `Quick livelock;
       Alcotest.test_case "a run stops at 100,000 operations" `Quick too_many;
+      Alcotest.test_case "a limit leaves a device's mutex unlocked" `Quick
+        unlocked_at_limit;
       Alcotest.test_case "operations take time" `Quick (Expect.passes op_time);
       Alcotest.test_case "an escaped Eio.Io: the restart decides" `Quick
         (Expect.passes escaped_io);

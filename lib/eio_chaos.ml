@@ -300,11 +300,21 @@ let none = { st = None; quiet = true }
    everything stops; the loop then ends the run. *)
 let park () = Eio.Cancel.protect Eio.Fiber.await_cancel
 
-let halt st o =
-  st.halted := Some o;
-  park ()
+(* Stop the run at its next turn, for the first reason given. It never
+   suspends: [decide] promises not to, and a device may hold a [Mutex.t]
+   across it. A loop that never yields still meets the limit on turns. *)
+let halt st o = if Option.is_none !(st.halted) then st.halted := Some o
+let stopped st = Option.is_some !(st.halted)
 
-let count_op st n = if n > max_ops then halt st Too_many
+(* A limit met inside [decide]: the operation is not recorded, and [decide]
+   answers it as it answers every later one. *)
+exception Limit
+
+let limit st o =
+  halt st o;
+  raise Limit
+
+let count_op st n = if n > max_ops then limit st Too_many
 let now_ns mono = Int64.to_int (Mtime.to_uint64_ns (Eio.Time.Mono.now mono))
 
 (* The operation the power cut fell before, and every one after, is
@@ -316,7 +326,7 @@ let cancelled st =
     (match st.phase with
     | Restarting -> st.kept_restart <- true
     | _ -> st.kept_run <- true);
-    park ()
+    halt st Kept_going
   end;
   raise (Eio.Cancel.Cancelled Cut)
 
@@ -337,7 +347,7 @@ let failed st (op : Op.t) =
       in
       if n >= limit then begin
         s.hit <- Some (tag, at, limit);
-        if n >= 2 * limit then park ();
+        if n >= 2 * limit then halt st (Livelock (tag, at, limit));
         failwith
           ("Eio_chaos: "
           ^ outcome_text ~noun:st.noun (Livelock (tag, at, limit)))
@@ -356,7 +366,7 @@ let add_floor st ~at n =
   | None -> ()
   | Some budget ->
       st.floor <- st.floor + n;
-      if st.floor > budget then halt st (Over_budget at)
+      if st.floor > budget then limit st (Over_budget at)
 
 let find name l n = List.find_opt (fun f -> String.equal (name f) n) l
 
@@ -522,12 +532,23 @@ let decide t op ~name ?(pp = fun ppf f -> Fmt.string ppf (name f))
   match t.st with
   | None -> None
   | Some st -> (
+      let stopped_at () =
+        if st.cut then raise (Eio.Cancel.Cancelled Cut) else None
+      in
       match st.phase with
       | Setup | Inspecting | Again | Ended -> None
-      | Running ->
-          decide_running st t op ~name ~pp ~lasting ~durable ~alone ~mild ~split
-            once
-      | Restarting -> decide_restarting st op)
+      | (Running | Restarting) when stopped st -> stopped_at ()
+      | Running -> (
+          match
+            decide_running st t op ~name ~pp ~lasting ~durable ~alone ~mild
+              ~split once
+          with
+          | v -> v
+          | exception Limit -> stopped_at ())
+      | Restarting -> (
+          match decide_restarting st op with
+          | v -> v
+          | exception Limit -> stopped_at ()))
 
 let index t = match t.st with Some st -> st.index | None -> 0
 
@@ -570,7 +591,8 @@ let inside t kind f =
 let hangs t why =
   match t.st with
   | Some ({ phase = Running | Restarting | Again; _ } as st) ->
-      halt st (Hung why)
+      halt st (Hung why);
+      park ()
   | Some _ | None -> failwith why
 
 let changed t i =

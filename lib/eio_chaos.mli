@@ -352,9 +352,10 @@ val decide :
     make, and a report of a run stopped at a limit says how many there were.
 
     It is [None] for {!none}, for a {!quiet} device, outside a run of the
-    program and its restart, and during the restart. Once the power is cut, it
-    raises [Eio.Cancel.Cancelled]. It does not suspend the calling fiber, and
-    may be called from any fiber of the run. *)
+    program and its restart, during the restart, and once the run stops at one
+    of its limits. Once the power is cut, it raises [Eio.Cancel.Cancelled]. It
+    does not suspend the calling fiber, so a device may call it holding a
+    [Mutex.t], and may be called from any fiber of the run. *)
 
 val index : t -> int
 (** [index t] is the number {!decide} gave to the operation it was last asked

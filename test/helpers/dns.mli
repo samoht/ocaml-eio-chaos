@@ -17,3 +17,7 @@ val runs : t -> string list list
 
 val restarts : t -> bool list
 (** [restarts t] is the [~power] of each restart of [t], the first first. *)
+
+val locked : t -> bool
+(** [locked t] is [true] iff the [Mutex.t] that [t] holds across
+    {!Eio_chaos.decide} is still locked. *)

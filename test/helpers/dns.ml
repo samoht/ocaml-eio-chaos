@@ -17,11 +17,21 @@ type t = {
   mutable chaos : Eio_chaos.t;
   mutable runs : string list list; (* latest first, each latest first *)
   mutable restarts : bool list; (* latest first *)
+  lock : Mutex.t; (* held across decide, as a device may *)
 }
 
-let v () = { chaos = Eio_chaos.none; runs = []; restarts = [] }
+let v () =
+  { chaos = Eio_chaos.none; runs = []; restarts = []; lock = Mutex.create () }
+
 let runs t = List.rev_map List.rev t.runs
 let restarts t = List.rev t.restarts
+
+let locked t =
+  if Mutex.try_lock t.lock then begin
+    Mutex.unlock t.lock;
+    false
+  end
+  else true
 
 module Net = struct
   type nonrec t = t
@@ -35,7 +45,11 @@ module Net = struct
 
   let getaddrinfo t ~service:_ host =
     let op = Eio_chaos.Op.v ~device:"net" ~kind:"resolve" ~changes:Never host in
-    match Eio_chaos.decide t.chaos op ~name:fault_name [ Timeout; Refused ] with
+    let fault =
+      Mutex.protect t.lock (fun () ->
+          Eio_chaos.decide t.chaos op ~name:fault_name [ Timeout; Refused ])
+    in
+    match fault with
     | Some f ->
         let key = Fmt.str "resolve:%s=%s" host (fault_name f) in
         (match t.runs with
