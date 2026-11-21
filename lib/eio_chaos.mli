@@ -352,8 +352,10 @@ val decide :
     make, and a report of a run stopped at a limit says how many there were.
 
     It is [None] for {!none}, for a {!quiet} device, outside a run of the
-    program and its restart, during the restart, and once the run stops at one
-    of its limits. Once the power is cut, it raises [Eio.Cancel.Cancelled]. It
+    program and its restart, and during the restart. Once the power is cut, it
+    raises [Eio.Cancel.Cancelled]. Once the run stops at one of its limits, it
+    raises an exception of its own, which a device lets through: the run ends
+    when the exception leaves the program, or when the program next waits. It
     does not suspend the calling fiber, so a device may call it holding a
     [Mutex.t], and may be called from any fiber of the run. *)
 
@@ -385,8 +387,10 @@ val turn : t -> unit
 (** [turn t] is work that does not wait, such as an operation that returns at
     once: it takes a turn of the run, 1 us of its clock, without letting other
     fibers run, so a loop of them still moves the clock and meets the run's
-    limits. The time it takes does not count as time a retry waited. It does
-    nothing outside a run of the program and its restart. *)
+    limits. The time it takes does not count as time a retry waited. In a run
+    stopped at one of its limits it does not return, so a device calls it
+    holding no [Mutex.t]. It does nothing outside a run of the program and its
+    restart. *)
 
 val inside : t -> string -> (unit -> 'a) -> 'a
 (** [inside t kind f] is [f ()], an operation of kind [kind] that may wait. A

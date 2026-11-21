@@ -158,13 +158,38 @@ let unlocked_at_limit () =
   let n = Dns.v () in
   let r =
     Expect.report (fun () ->
-        Eio_chaos.run [ Dns.device n ] (fun env ->
+        Eio_chaos.run
+          [ Dns.device n ]
+          (fun env ->
             for _ = 1 to 1_000_000 do
               resolve env "db"
             done))
   in
   if not (Expect.contains r "which stopped there") then
     Alcotest.failf "the first run did not stop at the budget: %s" r;
+  if Dns.locked n then Alcotest.fail "the device's mutex is still locked"
+
+(* A loop that catches the cut's cancellation and never waits still ends,
+   and leaves a device's mutex unlocked. *)
+let kept_going () =
+  let n = Dns.v () in
+  let r =
+    Expect.report (fun () ->
+        Eio_chaos.Private.run ~name:"kept_going" ~passes:[ Cuts ]
+          [ Disk.device (Disk.v ()); Eio_chaos.quiet (Dns.device n) ]
+          (fun env ->
+            let k = ref 0 in
+            while !k < 3 do
+              try
+                resolve env "db";
+                write env "a" (string_of_int !k);
+                sync env;
+                incr k
+              with Eio.Io _ | Eio.Cancel.Cancelled _ -> ()
+            done))
+  in
+  if not (Expect.contains r "it kept going for 1000 operations") then
+    Alcotest.failf "the run did not stop as one that kept going: %s" r;
   if Dns.locked n then Alcotest.fail "the device's mutex is still locked"
 
 (* A sync takes 1 ms of the run's clock, a failed one none. *)
@@ -668,6 +693,7 @@ let suite =
       Alcotest.test_case "a run stops at 100,000 operations" `Quick too_many;
       Alcotest.test_case "a limit leaves a device's mutex unlocked" `Quick
         unlocked_at_limit;
+      Alcotest.test_case "a run that catches the cut hangs" `Quick kept_going;
       Alcotest.test_case "operations take time" `Quick (Expect.passes op_time);
       Alcotest.test_case "an escaped Eio.Io: the restart decides" `Quick
         (Expect.passes escaped_io);

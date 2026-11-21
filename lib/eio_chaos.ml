@@ -302,31 +302,32 @@ let park () = Eio.Cancel.protect Eio.Fiber.await_cancel
 
 (* Stop the run at its next turn, for the first reason given. It never
    suspends: [decide] promises not to, and a device may hold a [Mutex.t]
-   across it. A loop that never yields still meets the limit on turns. *)
+   across it. *)
 let halt st o = if Option.is_none !(st.halted) then st.halted := Some o
 let stopped st = Option.is_some !(st.halted)
 
-(* A limit met inside [decide]: the operation is not recorded, and [decide]
-   answers it as it answers every later one. *)
-exception Limit
+(* What [decide] raises in a stopped run. No handler for [Eio.Io] or
+   [Eio.Cancel.Cancelled] takes it, so it leaves a loop that never yields;
+   the program's caller parks on it. *)
+exception Stop
 
-let limit st o =
+let leave st o =
   halt st o;
-  raise Limit
+  raise Stop
 
-let count_op st n = if n > max_ops then limit st Too_many
+let count_op st n = if n > max_ops then leave st Too_many
 let now_ns mono = Int64.to_int (Mtime.to_uint64_ns (Eio.Time.Mono.now mono))
 
 (* The operation the power cut fell before, and every one after, is
    cancelled; once every fiber waits, so is the run. One that catches the
-   cancellation still reaches here, and is stopped. *)
+   cancellation still reaches here, and leaves the run. *)
 let cancelled st =
   st.after <- st.after + 1;
   if st.after > max_after_cut then begin
     (match st.phase with
     | Restarting -> st.kept_restart <- true
     | _ -> st.kept_run <- true);
-    halt st Kept_going
+    leave st Kept_going
   end;
   raise (Eio.Cancel.Cancelled Cut)
 
@@ -347,7 +348,7 @@ let failed st (op : Op.t) =
       in
       if n >= limit then begin
         s.hit <- Some (tag, at, limit);
-        if n >= 2 * limit then halt st (Livelock (tag, at, limit));
+        if n >= 2 * limit then leave st (Livelock (tag, at, limit));
         failwith
           ("Eio_chaos: "
           ^ outcome_text ~noun:st.noun (Livelock (tag, at, limit)))
@@ -366,7 +367,7 @@ let add_floor st ~at n =
   | None -> ()
   | Some budget ->
       st.floor <- st.floor + n;
-      if st.floor > budget then limit st (Over_budget at)
+      if st.floor > budget then leave st (Over_budget at)
 
 let find name l n = List.find_opt (fun f -> String.equal (name f) n) l
 
@@ -532,23 +533,13 @@ let decide t op ~name ?(pp = fun ppf f -> Fmt.string ppf (name f))
   match t.st with
   | None -> None
   | Some st -> (
-      let stopped_at () =
-        if st.cut then raise (Eio.Cancel.Cancelled Cut) else None
-      in
       match st.phase with
       | Setup | Inspecting | Again | Ended -> None
-      | (Running | Restarting) when stopped st -> stopped_at ()
-      | Running -> (
-          match
-            decide_running st t op ~name ~pp ~lasting ~durable ~alone ~mild
-              ~split once
-          with
-          | v -> v
-          | exception Limit -> stopped_at ())
-      | Restarting -> (
-          match decide_restarting st op with
-          | v -> v
-          | exception Limit -> stopped_at ()))
+      | (Running | Restarting) when stopped st -> raise Stop
+      | Running ->
+          decide_running st t op ~name ~pp ~lasting ~durable ~alone ~mild ~split
+            once
+      | Restarting -> decide_restarting st op)
 
 let index t = match t.st with Some st -> st.index | None -> 0
 
@@ -575,6 +566,7 @@ let faulted t =
 let turn t =
   match t.st with
   | Some ({ phase = Running | Restarting | Again; _ } as st) ->
+      if stopped st then park ();
       st.charge ();
       st.taken <- st.taken + 1000
   | Some _ | None -> ()
@@ -930,7 +922,13 @@ let restart_devices cfg ~power ~cut =
     cfg.devices
 
 let first_lost st = match List.rev st.lost with [] -> None | l :: _ -> Some l
-let run_app c caps = c.cfg.app (env c.w caps)
+
+(* The program. However it leaves a stopped run, its fiber parks, and the
+   loop ends the run. *)
+let run_app c caps =
+  Fun.protect
+    ~finally:(fun () -> if stopped c.st then park ())
+    (fun () -> c.cfg.app (env c.w caps))
 
 (* After a run with a fault and no cut: each device restarted, [inspect], then
    the program again. *)
